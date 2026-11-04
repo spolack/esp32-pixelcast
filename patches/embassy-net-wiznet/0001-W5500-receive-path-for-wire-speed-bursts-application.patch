@@ -1,0 +1,548 @@
+From c530fae2097a22c7320f59562623f78d456e9584 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Wed, 4 Nov 2026 21:49:55 +0100
+Subject: [PATCH] W5500 receive path for wire-speed bursts, application hook,
+ diagnostics
+
+Receive (src/device.rs):
+- Bulk reads: what waits in the chip is read in chunks of up to CHUNK
+  (4 KB) per SPI transaction into a receive buffer of BULK bytes, and the
+  chip gets the space back at once. Frames are then served from that
+  buffer. The original used 8 SPI transactions per frame, too slow for
+  wire-speed bursts.
+- Background reads: the next chunk transfers (DMA) while the frames of the
+  current one are handled, through the new BulkRead trait (src/lib.rs):
+  bulk_start, bulk_finish, bulk_error.
+- Partial frames at the end of a chunk are kept and completed by the next.
+- Received size: the interrupt is cleared before RX_RSR is read (the other
+  order lost the wake-up of a frame landing in between), and RX_RSR is read
+  until two values match, at most 4 rounds (the chip writes a frame's
+  length header last).
+- Resync: a frame length that makes no sense drops the batch and re-reads
+  the chip's pointer (RX_RESYNCS).
+- Application hook: BulkRead::rx_hook sees every frame straight from the
+  receive buffer; returning true takes it and it never reaches the network
+  stack. The driver yields every 8 taken frames.
+- The receive buffer comes from BulkRead::take_rx_buffer, so the
+  application places it.
+
+Transmit: write_frame is bounded and yields: a TX buffer that never drains
+(link down, a glitch) drops the frame after 20 ms instead of hanging.
+
+Runner (src/lib.rs):
+- Queued TX frames are sent before more frames are read.
+- Does not wait for the interrupt line while frames of the current batch
+  are still unread (rx_pending).
+- read_frame returning 0 (nothing complete) is not handed up; an SPI error
+  counts in SPI_CHECK_ERRORS and backs off 1 ms instead of spinning.
+
+Link check and counters:
+- is_link_up also reads the version register as a running SPI check
+  (SPI_CHECKS, SPI_CHECK_ERRORS) and notices a chip that lost its socket
+  setup (CHIP_RESET_SEEN), e.g. after a power glitch.
+- RX_BACKLOG_MAX: largest backlog seen at the start of a batch.
+
+Only the W5500 is used and tested.
+---
+ src/device.rs | 276 ++++++++++++++++++++++++++++++++++++++++++--------
+ src/lib.rs    |  86 ++++++++++++++--
+ 2 files changed, 310 insertions(+), 52 deletions(-)
+
+diff --git a/src/device.rs b/src/device.rs
+index 8ef92b0..8d980b9 100644
+--- a/src/device.rs
++++ b/src/device.rs
+@@ -4,6 +4,8 @@ use embedded_hal_async::spi::SpiDevice;
+ 
+ use crate::chip::Chip;
+ 
++
++
+ #[repr(u8)]
+ enum Command {
+     Open = 0x01,
+@@ -22,10 +24,37 @@ enum Interrupt {
+ pub(crate) struct WiznetDevice<C, SPI> {
+     spi: SPI,
+     _phantom: PhantomData<C>,
++    // Bulk receive (esp32-pixelcast patch): what is waiting in the chip is
++    // read in chunks of up to `BULK` bytes, one SPI transaction each, and
++    // the chip gets the space back right away; frames are then served from
++    // `bulk`. `unfetched`: bytes the chip reported that are not read yet;
++    // `fetch_ptr`: the chip address of the next of them.
++    unfetched: u16,
++    fetch_ptr: u16,
++    bulk: &'static mut [u8; BULK],
++    bulk_pos: usize,
++    bulk_len: usize,
++    /// `fetch_ptr` matches the chip's read pointer (it only moves when this
++    /// driver sets it), so it need not be read back every batch.
++    ptr_known: bool,
++    /// Bytes of the chunk being read in the background.
++    in_flight: Option<usize>,
++    /// The chip may be asked once for newly arrived data (after a chunk).
++    probe_due: bool,
++    /// Frames taken by the application hook (for yielding now and then).
++    fast_run: u32,
+ }
+ 
++/// Bytes read from the chip per SPI transaction (about 7 Art-Net frames);
++/// the application's background-read buffer must hold this.
++pub const CHUNK: usize = 4096;
++/// The receive buffer: one chunk plus the start of a partly read frame.
++pub const BULK: usize = CHUNK + 1536;
++
+ /// Error type when initializing a new Wiznet device
+ pub enum InitError<SE> {
++    /// `BulkRead::take_rx_buffer` gave none (esp32-pixelcast patch).
++    NoBulkBuffer,
+     /// Error occurred when sending or receiving SPI data
+     SpiError(SE),
+     /// The chip returned a version that isn't expected or supported
+@@ -49,6 +78,7 @@ where
+ {
+     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+         match self {
++            InitError::NoBulkBuffer => write!(f, "NoBulkBuffer"),
+             InitError::SpiError(e) => write!(f, "SpiError({:?})", e),
+             InitError::InvalidChipVersion { expected, actual } => {
+                 write!(f, "InvalidChipVersion {{ expected: {}, actual: {} }}", expected, actual)
+@@ -64,6 +94,7 @@ where
+ {
+     fn format(&self, f: defmt::Formatter) {
+         match self {
++            InitError::NoBulkBuffer => defmt::write!(f, "NoBulkBuffer"),
+             InitError::SpiError(e) => defmt::write!(f, "SpiError({})", e),
+             InitError::InvalidChipVersion { expected, actual } => {
+                 defmt::write!(f, "InvalidChipVersion {{ expected: {}, actual: {} }}", expected, actual)
+@@ -72,12 +103,24 @@ where
+     }
+ }
+ 
+-impl<C: Chip, SPI: SpiDevice> WiznetDevice<C, SPI> {
++impl<C: Chip, SPI: SpiDevice + crate::BulkRead> WiznetDevice<C, SPI> {
+     /// Create and initialize the driver
+-    pub async fn new(spi: SPI, mac_addr: [u8; 6]) -> Result<Self, InitError<SPI::Error>> {
++    pub async fn new(mut spi: SPI, mac_addr: [u8; 6]) -> Result<Self, InitError<SPI::Error>> {
++        let Some(bulk) = spi.take_rx_buffer() else {
++            return Err(InitError::NoBulkBuffer);
++        };
+         let mut this = Self {
+             spi,
+             _phantom: PhantomData,
++            unfetched: 0,
++            fetch_ptr: 0,
++            bulk,
++            bulk_pos: 0,
++            bulk_len: 0,
++            ptr_known: false,
++            in_flight: None,
++            probe_due: false,
++            fast_run: 0,
+         };
+ 
+         // Reset device
+@@ -156,16 +199,22 @@ impl<C: Chip, SPI: SpiDevice> WiznetDevice<C, SPI> {
+     }
+ 
+     async fn get_rx_size(&mut self) -> Result<u16, SPI::Error> {
+-        loop {
+-            // Wait until two sequential reads are equal
++        // Read until two values match: the count also moves while a frame is
++        // still arriving, and the chip writes the frame's length header only
++        // once it is complete, so a size taken mid-frame made the length look
++        // wrong (seen as resyncs once frames were taken quickly). Measured:
++        // at most 3 rounds even in a burst; capped, then 0 (= try again on
++        // the next interrupt).
++        for _ in 0..4 {
+             let mut res0 = [0u8; 2];
+             self.bus_read(C::SOCKET_RECVD_SIZE, &mut res0).await?;
+             let mut res1 = [0u8; 2];
+             self.bus_read(C::SOCKET_RECVD_SIZE, &mut res1).await?;
+             if res0 == res1 {
+-                break Ok(u16::from_be_bytes(res0));
++                return Ok(u16::from_be_bytes(res0));
+             }
+         }
++        Ok(0)
+     }
+ 
+     async fn get_tx_free_size(&mut self) -> Result<u16, SPI::Error> {
+@@ -174,58 +223,179 @@ impl<C: Chip, SPI: SpiDevice> WiznetDevice<C, SPI> {
+         Ok(u16::from_be_bytes(data))
+     }
+ 
+-    /// Read bytes from the RX buffer.
+-    async fn read_bytes(&mut self, read_ptr: &mut u16, buffer: &mut [u8]) -> Result<(), SPI::Error> {
+-        if C::AUTO_WRAP {
+-            self.bus_read(C::rx_addr(*read_ptr), buffer).await?;
+-        } else {
+-            let addr = *read_ptr % C::BUF_SIZE;
+-            if addr as usize + buffer.len() <= C::BUF_SIZE as usize {
+-                self.bus_read(C::rx_addr(addr), buffer).await?;
+-            } else {
+-                let n = C::BUF_SIZE - addr;
+-                self.bus_read(C::rx_addr(addr), &mut buffer[..n as usize]).await?;
+-                self.bus_read(C::rx_addr(0), &mut buffer[n as usize..]).await?;
+-            }
+-        }
+-
+-        *read_ptr = (*read_ptr).wrapping_add(buffer.len() as u16);
+-
+-        Ok(())
++    /// True while received frames are still waiting to be handed up (the
++    /// interrupt line may already be released for them).
++    pub fn rx_pending(&self) -> bool {
++        // A partial frame alone is not pending: its rest raises the interrupt.
++        self.unfetched > 0 || self.in_flight.is_some() || self.complete_frame()
+     }
+ 
+-    /// Read an ethernet frame from the device. Returns the number of bytes read.
+-    pub async fn read_frame(&mut self, frame: &mut [u8]) -> Result<usize, SPI::Error> {
+-        let rx_size = self.get_rx_size().await? as usize;
+-        if rx_size == 0 {
+-            return Ok(0);
++    /// A whole frame is waiting in `bulk`.
++    fn complete_frame(&self) -> bool {
++        let have = self.bulk_len - self.bulk_pos;
++        have >= 2 && {
++            let at = self.bulk_pos;
++            have >= usize::from(u16::from_be_bytes([self.bulk[at], self.bulk[at + 1]]))
+         }
++    }
+ 
+-        self.reset_interrupt(Interrupt::Receive).await?;
+-
+-        let mut read_ptr = self.get_rx_read_ptr().await?;
++    /// Starts the next chunk read in the background (see [`crate::BulkRead`]),
++    /// unless one runs already or the chip has nothing. The frames already in
++    /// `bulk` are handled meanwhile; [`Self::collect`] then takes the chunk.
++    /// `force`: also ask the chip for newly arrived data (costs register
++    /// reads); otherwise that is done at most once per chunk.
++    async fn prefetch(&mut self, force: bool) -> Result<(), SPI::Error> {
++        if self.in_flight.is_some() {
++            return Ok(());
++        }
++        if self.unfetched == 0 {
++            if !force && !self.probe_due {
++                return Ok(());
++            }
++            self.probe_due = false;
++            // Clear the interrupt first, then read the size: a frame landing
++            // after the clear raises it again, so none is left unannounced,
++            // and with nothing waiting the line goes quiet. (The other order
++            // lost the wake-up of a frame that came in between; and the chip
++            // keeps the line low after RECV with an empty buffer, so the
++            // runner span on SPI reads.)
++            self.reset_interrupt(Interrupt::Receive).await?;
++            let size = self.get_rx_size().await?;
++            if size == 0 {
++                return Ok(());
++            }
++            if size > C::BUF_SIZE {
++                // More than the chip holds: the bus is not answering (it
++                // reads as 0xFFFF). Start over with a fresh read pointer.
++                crate::RX_RESYNCS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++                self.ptr_known = false;
++                return Ok(());
++            }
++            crate::RX_BACKLOG_MAX.fetch_max(size, core::sync::atomic::Ordering::Relaxed);
++            if !self.ptr_known {
++                self.fetch_ptr = self.get_rx_read_ptr().await?;
++                self.ptr_known = true;
++            }
++            self.unfetched = size;
++        }
++        let n = usize::from(self.unfetched).min(CHUNK);
++        if self.spi.bulk_start(self.fetch_ptr, n.div_ceil(4) * 4) {
++            self.in_flight = Some(n);
++            Ok(())
++        } else {
++            Err(self.spi.bulk_error())
++        }
++    }
+ 
+-        // First two bytes gives the size of the received ethernet frame
+-        let expected_frame_size: usize = {
+-            let mut frame_bytes = [0u8; 2];
+-            self.read_bytes(&mut read_ptr, &mut frame_bytes).await?;
+-            u16::from_be_bytes(frame_bytes) as usize - 2
++    /// Waits for the background read (if any), appends it to what is left in
++    /// `bulk` and gives the chip its space back. False: nothing was running.
++    async fn collect(&mut self) -> Result<bool, SPI::Error> {
++        let Some(n) = self.in_flight.take() else {
++            return Ok(false);
+         };
+-
+-        // Read the ethernet frame
+-        self.read_bytes(&mut read_ptr, &mut frame[..expected_frame_size])
+-            .await?;
+-
+-        // Register RX as completed
+-        self.set_rx_read_ptr(read_ptr).await?;
++        // Keep the start of a partly read frame (shorter than BULK - CHUNK).
++        let keep = self.bulk_len - self.bulk_pos;
++        self.bulk.copy_within(self.bulk_pos..self.bulk_len, 0);
++        self.bulk_pos = 0;
++        // Valid so far: only the kept part (if the read fails, its chunk is
++        // read again next time: the chip's pointer has not moved).
++        self.bulk_len = keep;
++        let padded = n.div_ceil(4) * 4;
++        self.spi.bulk_finish(&mut self.bulk[keep..keep + padded])?;
++        self.bulk_len = keep + n;
++        self.fetch_ptr = self.fetch_ptr.wrapping_add(n as u16);
++        self.unfetched -= n as u16;
++        self.probe_due = true;
++        // The data is in RAM now: hand the space back at once.
++        self.set_rx_read_ptr(self.fetch_ptr).await?;
+         self.command(Command::Receive).await?;
++        Ok(true)
++    }
+ 
+-        Ok(expected_frame_size)
++    /// Drops everything received so far (out of step with the chip).
++    async fn resync(&mut self) -> Result<(), SPI::Error> {
++        crate::RX_RESYNCS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++        if let Some(n) = self.in_flight.take() {
++            // Let the running read end (its data is dropped below).
++            let padded = n.div_ceil(4) * 4;
++            self.spi.bulk_finish(&mut self.bulk[..padded])?;
++            self.fetch_ptr = self.fetch_ptr.wrapping_add(n as u16);
++            self.unfetched -= n as u16;
++        }
++        self.bulk_pos = 0;
++        self.bulk_len = 0;
++        self.fetch_ptr = self.fetch_ptr.wrapping_add(self.unfetched);
++        self.unfetched = 0;
++        // Read the chip's pointer again before the next batch.
++        self.ptr_known = false;
++        self.set_rx_read_ptr(self.fetch_ptr).await?;
++        self.command(Command::Receive).await
++    }
++
++    /// Read an ethernet frame from the device. Returns the number of bytes
++    /// read (0: nothing waiting).
++    pub async fn read_frame(&mut self, frame: &mut [u8]) -> Result<usize, SPI::Error> {
++        loop {
++            let have = self.bulk_len - self.bulk_pos;
++            if have >= 2 {
++                // First two bytes give the size of the frame, header included.
++                let at = self.bulk_pos;
++                let total = usize::from(u16::from_be_bytes([self.bulk[at], self.bulk[at + 1]]));
++                // Longer than any Ethernet frame (and than a kept partial
++                // frame may be): out of step with the chip.
++                if total < 2 || total > BULK - CHUNK {
++                    self.resync().await?;
++                    return Ok(0);
++                }
++                if have >= total && total - 2 > frame.len() {
++                    // Well-formed but too big for the stack (e.g. VLAN-tagged
++                    // full-size): drop just this frame, not the batch.
++                    self.bulk_pos += total;
++                    continue;
++                }
++                if have >= total {
++                    // Start reading the next chunk now: it transfers while
++                    // this one's frames are handled.
++                    self.prefetch(false).await?;
++                    // esp32-pixelcast patch: the application may take the
++                    // frame straight from here (Art-Net fast path).
++                    if self.spi.rx_hook(&self.bulk[at + 2..at + total]) {
++                        self.bulk_pos += total;
++                        self.fast_run += 1;
++                        if self.fast_run % 8 == 0 {
++                            // Let other tasks run now and then in a long burst.
++                            embassy_futures::yield_now().await;
++                        }
++                        continue;
++                    }
++                    let n = total - 2;
++                    frame[..n].copy_from_slice(&self.bulk[at + 2..at + total]);
++                    self.bulk_pos += total;
++                    return Ok(n);
++                }
++            }
++            // Nothing or only part of a frame here: take the next chunk. When
++            // the chip has nothing more yet, keep the part and wait for the
++            // interrupt.
++            self.prefetch(true).await?;
++            if !self.collect().await? {
++                return Ok(0);
++            }
++        }
+     }
+ 
+     /// Write an ethernet frame to the device. Returns number of bytes written
+     pub async fn write_frame(&mut self, frame: &[u8]) -> Result<usize, SPI::Error> {
+-        while self.get_tx_free_size().await? < frame.len() as u16 {}
++        // esp32-pixelcast patch: bounded, and yielding (the SPI calls do
++        // not): a TX buffer that never drains (link down, a glitch) drops
++        // the frame after 20 ms instead of hanging this core.
++        let start = embassy_time::Instant::now();
++        while self.get_tx_free_size().await? < frame.len() as u16 {
++            if start.elapsed() > embassy_time::Duration::from_millis(20) {
++                return Ok(0);
++            }
++            embassy_futures::yield_now().await;
++        }
+         let write_ptr = self.get_tx_write_ptr().await?;
+ 
+         if C::AUTO_WRAP {
+@@ -248,6 +418,22 @@ impl<C: Chip, SPI: SpiDevice> WiznetDevice<C, SPI> {
+     }
+ 
+     pub async fn is_link_up(&mut self) -> bool {
++        // esp32-pixelcast patch: also read the version register, which never
++        // changes, as a running check of the SPI link.
++        let mut version = [0];
++        let ok = self.bus_read(C::COMMON_VERSION, &mut version).await.is_ok();
++        crate::SPI_CHECKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++        if !ok || version[0] != C::CHIP_VERSION {
++            crate::SPI_CHECK_ERRORS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++        } else {
++            // The chip answers, but did it keep its setup? A power glitch on
++            // the module resets it (MACRAW socket closed, MAC gone) while the
++            // link still looks up; receive would stay dead.
++            let mut mode = [0];
++            if self.bus_read(C::SOCKET_MODE, &mut mode).await.is_ok() && mode[0] != C::SOCKET_MODE_VALUE {
++                crate::CHIP_RESET_SEEN.store(true, core::sync::atomic::Ordering::Relaxed);
++            }
++        }
+         let mut link = [0];
+         self.bus_read(C::COMMON_PHY_CFG, &mut link).await.ok();
+         link[0] & 1 == 1
+diff --git a/src/lib.rs b/src/lib.rs
+index 30a5db9..0bb26dc 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -15,7 +15,43 @@ use embedded_hal_async::digital::Wait;
+ use embedded_hal_async::spi::SpiDevice;
+ 
+ use crate::chip::Chip;
+-pub use crate::device::InitError;
++pub use crate::device::{BULK, CHUNK, InitError};
++
++/// esp32-pixelcast: reading the W5500's RX buffer in the background, so the
++/// frames already read are handled while the next chunk transfers. Only used
++/// for the socket 0 RX buffer; any other SPI access may come in between
++/// (the implementation then waits for the read first).
++pub trait BulkRead: embedded_hal_async::spi::ErrorType {
++    /// Starts reading `len` bytes from RX buffer address `ptr`. False if it
++    /// could not start (see [`Self::bulk_error`]).
++    fn bulk_start(&mut self, ptr: u16, len: usize) -> bool;
++    /// Waits for the read and copies its bytes into `dst` (the started length).
++    fn bulk_finish(&mut self, dst: &mut [u8]) -> Result<(), Self::Error>;
++    /// The error for a read that could not start.
++    fn bulk_error(&mut self) -> Self::Error;
++    /// The driver's receive buffer, taken once by [`new`] (so the
++    /// application can place it in a RAM region of its choice).
++    fn take_rx_buffer(&mut self) -> Option<&'static mut [u8; BULK]>;
++    /// Called with each received frame (Ethernet header on). True: the
++    /// application handled it and it does not go to the network stack.
++    fn rx_hook(&mut self, _frame: &[u8]) -> bool {
++        false
++    }
++}
++
++/// esp32-pixelcast patch: SPI link health counters (cumulative).
++/// Version-register checks done (every 500 ms).
++pub static SPI_CHECKS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
++/// Version-register checks that read a wrong value.
++pub static SPI_CHECK_ERRORS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
++/// Largest number of bytes waiting in the chip at the start of a batch
++/// (the reader resets it; the chip holds 16 KB).
++pub static RX_BACKLOG_MAX: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
++/// The chip answers but lost its socket setup (reset by a power glitch);
++/// the application should start it again (restart).
++pub static CHIP_RESET_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
++/// Received batches dropped because a frame length made no sense.
++pub static RX_RESYNCS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+ use crate::device::WiznetDevice;
+ 
+ // If you change this update the docs of State
+@@ -50,7 +86,7 @@ impl<const N_RX: usize, const N_TX: usize> State<N_RX, N_TX> {
+ /// Background runner for the driver.
+ ///
+ /// You must call `.run()` in a background task for the driver to operate.
+-pub struct Runner<'d, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin> {
++pub struct Runner<'d, C: Chip, SPI: SpiDevice + BulkRead, INT: Wait, RST: OutputPin> {
+     mac: WiznetDevice<C, SPI>,
+     ch: ch::Runner<'d, MTU>,
+     int: INT,
+@@ -58,15 +94,29 @@ pub struct Runner<'d, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin> {
+ }
+ 
+ /// You must call this in a background task for the driver to operate.
+-impl<'d, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin> Runner<'d, C, SPI, INT, RST> {
++impl<'d, C: Chip, SPI: SpiDevice + BulkRead, INT: Wait, RST: OutputPin> Runner<'d, C, SPI, INT, RST> {
+     /// Run the driver.
+     pub async fn run(mut self) -> ! {
+         let (state_chan, mut rx_chan, mut tx_chan) = self.ch.split();
+         let mut tick = Ticker::every(Duration::from_millis(500));
++        let mut empty_reads = 0u32;
+         loop {
++            // esp32-pixelcast patch: frames of a batch already announced do
++            // not raise the interrupt line again, so do not wait for it then.
++            // esp32-pixelcast: while frames keep coming in, the receive arm
++            // is always ready and select3 polls it first; send what is
++            // queued first so replies do not wait for a burst to end.
++            if let Some(p) = tx_chan.try_tx_buf() {
++                self.mac.write_frame(p).await.ok();
++                tx_chan.tx_done();
++                continue;
++            }
++            let pending = self.mac.rx_pending();
+             match select3(
+                 async {
+-                    self.int.wait_for_low().await.ok();
++                    if !pending {
++                        self.int.wait_for_low().await.ok();
++                    }
+                     rx_chan.rx_buf().await
+                 },
+                 tx_chan.tx_buf(),
+@@ -75,8 +125,30 @@ impl<'d, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin> Runner<'d, C, SPI,
+             .await
+             {
+                 Either3::First(p) => {
+-                    if let Ok(n) = self.mac.read_frame(p).await {
+-                        rx_chan.rx_done(n);
++                    // esp32-pixelcast: only real frames go up (an empty read
++                    // keeps the buffer for the next one).
++                    match self.mac.read_frame(p).await {
++                        // Nothing complete. Usually the interrupt wait then
++                        // sleeps; if the line stays low with nothing to read
++                        // this would spin (the SPI calls never yield), so
++                        // yield after a run of empty reads. Not after each
++                        // one: in a burst that delays draining the chip.
++                        Ok(0) => {
++                            empty_reads += 1;
++                            if empty_reads % 16 == 0 {
++                                embassy_futures::yield_now().await;
++                            }
++                        }
++                        Ok(n) => {
++                            empty_reads = 0;
++                            rx_chan.rx_done(n);
++                        }
++                        // An SPI error: pause instead of retrying at once (a
++                        // tight retry loop never yields and starves the rest).
++                        Err(_) => {
++                            SPI_CHECK_ERRORS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
++                            Timer::after(Duration::from_millis(1)).await;
++                        }
+                     }
+                 }
+                 Either3::Second(p) => {
+@@ -100,7 +172,7 @@ impl<'d, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin> Runner<'d, C, SPI,
+ /// This returns two structs:
+ /// - a `Device` that you must pass to the `embassy-net` stack.
+ /// - a `Runner`. You must call `.run()` on it in a background task.
+-pub async fn new<'a, const N_RX: usize, const N_TX: usize, C: Chip, SPI: SpiDevice, INT: Wait, RST: OutputPin>(
++pub async fn new<'a, const N_RX: usize, const N_TX: usize, C: Chip, SPI: SpiDevice + BulkRead, INT: Wait, RST: OutputPin>(
+     mac_addr: [u8; 6],
+     state: &'a mut State<N_RX, N_TX>,
+     spi_dev: SPI,
+-- 
+2.56.0
+

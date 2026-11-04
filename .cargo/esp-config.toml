@@ -1,0 +1,16 @@
+# Keep user/runtime configuration values in this file.
+[env]
+ESP_LOG="info"
+# Fail the link instead of flashing an image whose main stack is too small
+# (static data takes RAM from the stack; 16 KB crashed at start-up).
+# Measured peak use (`stack_free_min` on the status API, see stackwatch.rs):
+# about 19.5 KB, reached at start-up; bursts, OTA, setup Wi-Fi and saving
+# settings stay below. 24 KB keeps a margin of 4.5 KB over that.
+ESP_HAL_CONFIG_ENSURE_MAIN_STACK_MINIMUM="24576"
+# sACN joins one multicast group per universe (4 outputs x 4 universes),
+# mDNS one more.
+SMOLTCP_IFACE_MAX_MULTICAST_GROUP_COUNT="48"
+# The W5500 receive path spends most of its SPI time in the driver: keep it in
+# IRAM so it does not depend on flash-cache hits (measured 50-140 us per
+# transaction depending on code layout).
+ESP_HAL_CONFIG_PLACE_SPI_MASTER_DRIVER_IN_RAM="true"

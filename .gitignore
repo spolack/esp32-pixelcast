@@ -1,0 +1,21 @@
+# Build output
+/target/
+/core/target/
+/updater/target/
+/build/
+/dist/
+
+# ESP-IDF (tools/bootloader)
+/tools/bootloader/build/
+/tools/bootloader/sdkconfig
+/tools/bootloader/sdkconfig.old
+/tools/bootloader/dependencies.lock
+
+# Editors and OS
+.vscode/
+.zed/
+.helix/
+.idea/
+.nvim.lua
+**/*.rs.bk
+**/.DS_Store

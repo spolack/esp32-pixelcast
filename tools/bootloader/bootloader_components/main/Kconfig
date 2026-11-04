@@ -1,0 +1,7 @@
+menu "esp32-pixelcast bootloader"
+    config PXC_BOOT_BUTTON
+        bool "BOOT within 2 s after a power-on/EN reset switches the app slot"
+        default y
+        help
+            Off only for tests in QEMU (which reads GPIO0 as pressed).
+endmenu

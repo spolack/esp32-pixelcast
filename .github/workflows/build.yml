@@ -1,0 +1,145 @@
+name: build
+
+# Every push and pull request builds all images. A tag v* publishes them as a
+# release; a push to main (and the nightly schedule) replaces the "nightly"
+# pre-release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: tools/test.sh
+
+  bootloader:
+    name: bootloader (ESP-IDF v6.1)
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.1
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/build.sh bootloader
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootloader
+          path: dist/bootloader.bin
+
+  firmware:
+    name: updater and firmware
+    runs-on: ubuntu-latest
+    needs: bootloader
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the firmware version names the commit
+      - uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            updater
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: espflash@4.7.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install esptool
+      - uses: actions/download-artifact@v4
+        with:
+          name: bootloader
+          path: dist
+      - run: tools/build.sh deps updater firmware
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            dist/updater.bin
+            dist/esp32-pixelcast.bin
+            dist/partitions.bin
+
+  wled:
+    name: WLED (upstream + patches)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # WLED bundles its web pages with Node (npm ci, npm run build).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            build/WLED/.pio
+          key: pio-${{ hashFiles('tools/build.sh', 'patches/wled/*.patch') }}
+          restore-keys: pio-
+      - run: pip install platformio
+      - run: tools/build.sh wled
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wled
+          path: dist/wled.bin
+
+  publish:
+    name: image and release
+    runs-on: ubuntu-latest
+    needs: [test, bootloader, firmware, wled]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: tools/build.sh image
+      - run: (cd dist && sha256sum *.bin > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: images
+          path: dist/*
+
+      - name: release (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --notes-file .github/release-notes.md
+
+      - name: nightly (main)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly dist/* --prerelease --target "$GITHUB_SHA" \
+            --title "nightly ($(git rev-parse --short HEAD))" --notes-file .github/release-notes.md

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Live Art-Net</title>
+<link rel="icon" href="data:,">
+<style><!--COMMON_CSS--></style>
+<script>try{var t=localStorage.getItem('an-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.stat{min-width:0;padding:10px 12px;background:var(--card2);border-radius:10px}
+.stat small{display:block;color:var(--mu);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.stat b{display:block;font-size:24px;line-height:1.3;font-weight:600;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat.warn b{color:var(--warn)}
+.s5 .stat:last-child{grid-column:1/-1}
+@media (min-width:520px){.stats{grid-template-columns:repeat(5,minmax(0,1fr))}.s5 .stat:last-child{grid-column:auto}}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:8px}
+.tile{display:flex;flex-direction:column;align-items:center;padding:7px 0 6px;font:inherit;color:var(--tx);
+  background:var(--card2);border:1px solid transparent;border-radius:10px;cursor:pointer;
+  transition:opacity .3s,background-color .3s,box-shadow .15s}
+.tile b{font-size:15px;line-height:1.25;font-variant-numeric:tabular-nums}
+.tile span{font-size:11px;color:var(--mu);font-variant-numeric:tabular-nums}
+.tile.ok{background:var(--ok-bg)}.tile.ok b{color:var(--ok)}
+.tile.warn{background:var(--warn-bg)}.tile.warn b{color:var(--warn)}
+.tile.err{background:var(--err-bg)}.tile.err b{color:var(--err)}
+.tile.stale{opacity:.4}
+.tile.sel{box-shadow:0 0 0 2px var(--ac)}
+.empty{padding:22px 12px;text-align:center;color:var(--mu);border:1px dashed var(--line);border-radius:10px}
+.legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.wctl{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;margin-bottom:16px}
+.wctl .in{width:104px;text-align:center}
+.wctl .btn{padding:0;width:40px;font-size:20px}
+.ro{min-height:22px;margin-bottom:6px;font-size:13px;color:var(--mu);font-variant-numeric:tabular-nums}
+.cv{display:block;width:100%;border-radius:8px;touch-action:pan-y}
+.cv.led{background:#090c11}
+.card h3{margin-top:18px}
+.stat b.t{font-size:18px;line-height:1.7}
+</style>
+</head>
+<body data-page="artnet">
+<header id="top"></header>
+<main class="wrap">
+  <div class="head"><h1>Live Art-Net</h1><span class="sub">Refreshes every second</span></div>
+
+  <div class="grid">
+    <section class="card span">
+      <div class="stats s5">
+        <div class="stat"><small>Packets/s</small><b id="v-pps">—</b></div>
+        <div class="stat"><small>Active universes</small><b id="v-uni">—</b></div>
+        <div class="stat"><small>ArtSync/s</small><b id="v-sync">—</b></div>
+        <div id="s-gaps" class="stat"><small>Sequence gaps</small><b id="v-gaps">—</b></div>
+        <div class="stat"><small>Network</small><b id="v-net" class="t">—</b></div>
+      </div>
+    </section>
+
+    <section class="card span">
+      <h2><i class="ic" data-i="grid"></i>Universes 0–63</h2>
+      <div id="empty" class="empty">No Art-Net data received yet. Active universes show up here with their frame rate.</div>
+      <div id="tiles" class="tiles" hidden></div>
+      <div class="legend sub">
+        <span class="pill ok">≥ 90 % of fastest</span><span class="pill warn">50–90 %</span>
+        <span class="pill err">&lt; 50 %</span><span class="pill">no data</span>
+      </div>
+    </section>
+
+    <section class="card span">
+      <h2><i class="ic" data-i="eye"></i>Watched universe <span id="p-w" class="pill">No data yet</span></h2>
+      <div class="wctl">
+        <button id="prev" class="btn" type="button" aria-label="Previous universe">‹</button>
+        <input id="uin" class="in num" type="number" min="0" max="32767" step="1" inputmode="numeric" aria-label="Universe, 0 to 32767">
+        <button id="next" class="btn" type="button" aria-label="Next universe">›</button>
+        <span class="sub" style="white-space:nowrap"><span id="nsu" class="mono num" style="color:var(--tx)"></span> Net:Sub:Uni</span>
+      </div>
+      <h3>Channels <span class="sub">1–512, brightness = value</span></h3>
+      <div id="ro-ch" class="ro"></div>
+      <canvas id="cv-ch" class="cv" role="img" aria-label="512 channel values"></canvas>
+      <h3>LED preview <span class="sub" id="led-sub">128 × RGBW (white mixed in)</span></h3>
+      <div id="ro-led" class="ro"></div>
+      <canvas id="cv-led" class="cv led" role="img" aria-label="128 RGBW LEDs"></canvas>
+    </section>
+  </div>
+</main>
+<script><!--COMMON_JS--></script>
+<script>
+'use strict';
+const {$, el, getJSON, poll, fmtPort, netName} = AN;
+AN.init();
+AN.ensureName();
+
+const STALE_MS = 20000;            // forget a universe this long after its last frame
+const root = document.documentElement;
+let cur = 0;                       // watched universe
+let data = new Uint8Array(512);    // its channel values
+let len = 0;                       // channels received
+let ledCols = 32;
+let chn = 4;                         // channels per LED: 4 = RGBW, 3 = RGB (from the board)
+const nLeds = () => chn === 4 ? 128 : 170;
+const hov = {ch: -1, led: -1};     // hovered / tapped cell per canvas
+const seen = {};                   // universe -> {el, f, fps, ratio, on, t}
+let poller = null;
+
+const hex2 = v => (v < 16 ? '0' : '') + v.toString(16).toUpperCase();
+function fmtAge(ms) { return ms < 1000 ? ms + ' ms' : ms < 60000 ? (ms / 1000).toFixed(1) + ' s' : Math.round(ms / 60000) + ' min'; }
+function pill(kind, text) { const e = $('p-w'); e.className = 'pill ' + kind; e.textContent = text; }
+
+/* ---- Universe tiles: updated in place so taps are never lost to a re-render ---- */
+function paint() {
+  Object.keys(seen).forEach(k => {
+    const s = seen[k];
+    const h = !s.on ? 'stale' : s.ratio >= .9 ? 'ok' : s.ratio >= .5 ? 'warn' : 'err';
+    s.el.className = 'tile ' + h + (+k === cur ? ' sel' : '');
+    s.f.textContent = s.on ? s.fps + ' fps' : '—';
+    s.el.title = 'Universe ' + k + ' (' + fmtPort(+k) + ')' + (s.on ? ', ' + s.fps + ' fps' : ', no data');
+  });
+}
+function tile(u) {
+  const b = el('button', 'tile'), f = el('span');
+  b.type = 'button'; b.dataset.u = u;
+  b.append(el('b', '', u), f);
+  let next = null;
+  for (const c of $('tiles').children) if (+c.dataset.u > u) { next = c; break; }
+  $('tiles').insertBefore(b, next);
+  return (seen[u] = {el: b, f, fps: 0, ratio: 0, on: false, t: 0});
+}
+function renderTiles(list) {
+  const now = Date.now(), max = Math.max(1, ...list.map(x => x.fps));
+  Object.keys(seen).forEach(k => { seen[k].on = false; });
+  list.forEach(x => {
+    const s = seen[x.u] || tile(x.u);
+    s.on = true; s.fps = x.fps; s.ratio = x.fps / max; s.t = now;
+  });
+  Object.keys(seen).forEach(k => { if (now - seen[k].t > STALE_MS) { seen[k].el.remove(); delete seen[k]; } });
+  const any = Object.keys(seen).length > 0;
+  $('tiles').hidden = !any; $('empty').hidden = any;
+  paint();
+}
+
+/* ---- Canvas drawing ---- */
+const rgb = n => { const h = getComputedStyle(root).getPropertyValue(n).trim(); return [1, 3, 5].map(i => parseInt(h.substr(i, 2), 16)); };
+function prep(cv, cols, rows) {
+  const w = cv.clientWidth || 300, cs = w / cols, h = Math.round(cs * rows), d = window.devicePixelRatio || 1;
+  cv.style.height = h + 'px';
+  if (cv.width !== Math.round(w * d) || cv.height !== Math.round(h * d)) { cv.width = Math.round(w * d); cv.height = Math.round(h * d); }
+  const g = cv.getContext('2d');
+  g.setTransform(d, 0, 0, d, 0, 0);
+  g.clearRect(0, 0, w, h);
+  return {g, cs};
+}
+function drawCh() {
+  const {g, cs} = prep($('cv-ch'), 32, 16), c0 = rgb('--card2'), c1 = rgb('--ac');
+  for (let i = 0; i < 512; i++) {
+    const t = i < len ? Math.pow(data[i] / 255, .65) : 0;
+    g.globalAlpha = i < len ? 1 : .4;
+    g.fillStyle = 'rgb(' + c0.map((c, k) => Math.round(c + (c1[k] - c) * t)).join(',') + ')';
+    g.fillRect((i % 32) * cs + .5, (i >> 5) * cs + .5, cs - 1, cs - 1);
+  }
+  g.globalAlpha = 1;
+  if (hov.ch >= 0) {
+    g.strokeStyle = 'rgb(' + rgb('--tx') + ')'; g.lineWidth = 1.5;
+    g.strokeRect((hov.ch % 32) * cs + 1, (hov.ch >> 5) * cs + 1, cs - 2, cs - 2);
+  }
+}
+function drawLed() {
+  const cv = $('cv-led');
+  ledCols = cv.clientWidth >= 520 ? 64 : 32;
+  const n = nLeds();
+  const {g, cs} = prep(cv, ledCols, Math.ceil(n / ledCols));
+  for (let i = 0; i < n; i++) {
+    const x = (i % ledCols + .5) * cs, y = (Math.floor(i / ledCols) + .5) * cs, o = i * chn;
+    const w = chn === 4 ? data[o + 3] : 0, r = Math.min(255, data[o] + w), gr = Math.min(255, data[o + 1] + w), b = Math.min(255, data[o + 2] + w);
+    const m = Math.max(r, gr, b), c = r + ',' + gr + ',' + b;
+    if (m) { g.fillStyle = 'rgba(' + c + ',' + (m / 900).toFixed(2) + ')'; g.beginPath(); g.arc(x, y, cs * .5, 0, 7); g.fill(); }
+    g.globalAlpha = o < len ? 1 : .4;
+    g.fillStyle = m ? 'rgb(' + c + ')' : '#1b2330';
+    g.beginPath(); g.arc(x, y, cs * .36, 0, 7); g.fill();
+    g.globalAlpha = 1;
+  }
+  if (hov.led >= 0) {
+    g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.beginPath();
+    g.arc((hov.led % ledCols + .5) * cs, (Math.floor(hov.led / ledCols) + .5) * cs, cs * .45, 0, 7); g.stroke();
+  }
+}
+function readouts() {
+  const c = hov.ch, l = hov.led, o = l * chn;
+  const inLed = c >= 0 && Math.floor(c / chn) < nLeds();
+  $('ro-ch').textContent = c < 0 ? (len ? 'Hover or tap a cell for its value' : 'No data received on this universe yet')
+    : 'Channel ' + (c + 1) + (c < len ? ' = ' + data[c] + ' (0x' + hex2(data[c]) + ')' +
+      (inLed ? ' · LED ' + (Math.floor(c / chn) + 1) + ' ' + 'RGBW'[c % chn] : ' · unused') : ' – not received');
+  $('ro-led').textContent = l < 0 ? (len ? 'Hover or tap an LED for its channels' : 'No data received on this universe yet')
+    : 'LED ' + (l + 1) + ' · R ' + data[o] + ' G ' + data[o + 1] + ' B ' + data[o + 2] + (chn === 4 ? ' W ' + data[o + 3] : '') +
+      ' · ch ' + (o + 1) + '–' + (o + chn);
+}
+function draw() { drawCh(); drawLed(); readouts(); }
+
+// Pointer -> cell index (mouse hover, touch/pen tap or horizontal drag)
+function hit(cv, e, cols, n) {
+  const r = cv.getBoundingClientRect(), cs = r.width / cols;
+  const i = Math.floor((e.clientY - r.top) / cs) * cols + Math.floor((e.clientX - r.left) / cs);
+  return i >= 0 && i < n ? i : -1;
+}
+function wire(id, key, cols, n) {
+  const cv = $(id), on = e => { hov[key] = hit(cv, e, cols(), typeof n === 'function' ? n() : n); draw(); };
+  cv.addEventListener('pointermove', on);
+  cv.addEventListener('pointerdown', on);
+  cv.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') { hov[key] = -1; draw(); } });
+}
+wire('cv-ch', 'ch', () => 32, 512);
+wire('cv-led', 'led', () => ledCols, nLeds);
+let raf = 0;
+window.addEventListener('resize', () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(draw); });
+
+/* ---- Watched universe ---- */
+function watch(u) {
+  cur = u; len = 0; data = new Uint8Array(512); hov.ch = hov.led = -1;
+  $('uin').value = u; $('uin').removeAttribute('aria-invalid');
+  $('nsu').textContent = fmtPort(u);
+  try { history.replaceState(null, '', '#u=' + u); } catch (e) { /* ignore */ }
+  pill('', 'No data yet');
+  paint(); draw();
+  if (poller) poller.kick();
+}
+const valid = v => /^\d+$/.test(v) && +v <= 32767;
+$('uin').oninput = e => {
+  const ok = valid(e.target.value);
+  e.target.setAttribute('aria-invalid', !ok);
+  if (ok) $('nsu').textContent = fmtPort(+e.target.value);
+};
+$('uin').onchange = e => { if (valid(e.target.value)) watch(+e.target.value); };
+$('prev').onclick = () => watch(Math.max(0, cur - 1));
+$('next').onclick = () => watch(Math.min(32767, cur + 1));
+$('tiles').onclick = e => { const t = e.target.closest('.tile'); if (t) watch(+t.dataset.u); };
+
+function renderWatch(w) {
+  if (!w || w.u !== cur) return; // answer for a previous selection
+  const d = w.data || '';
+  len = Math.min(d.length >> 1, 512);
+  data = new Uint8Array(512);
+  for (let i = 0; i < len; i++) data[i] = parseInt(d.substr(i * 2, 2), 16) || 0;
+  if (!len || w.age_ms == null) pill('', 'No data yet');
+  else if (w.age_ms > 5000) pill('warn', 'Stale · ' + fmtAge(w.age_ms));
+  else pill('ok', 'Live · ' + fmtAge(w.age_ms));
+  draw();
+}
+
+function render(d) {
+  const c = d.led_type === 'rgb' ? 3 : 4;
+  if (c !== chn) {
+    chn = c;
+    $('led-sub').textContent = nLeds() + ' × ' + (chn === 4 ? 'RGBW (white mixed in)' : 'RGB');
+    $('cv-led').setAttribute('aria-label', nLeds() + (chn === 4 ? ' RGBW' : ' RGB') + ' LEDs');
+  }
+  $('v-pps').textContent = d.pps;
+  $('v-uni').textContent = d.universes.length;
+  $('v-sync').textContent = d.sync;
+  $('v-gaps').textContent = d.seq_gaps;
+  $('s-gaps').className = 'stat' + (d.seq_gaps > 0 ? ' warn' : '');
+  $('v-net').textContent = netName(d.network);
+  renderTiles(d.universes);
+  renderWatch(d.watch);
+}
+
+const m = /u=(\d+)/.exec(location.hash);
+watch(m && +m[1] <= 32767 ? +m[1] : 0);
+poller = poll(async () => render(await getJSON('/api/artnet?u=' + cur)), 1000);
+</script>
+</body>
+</html>

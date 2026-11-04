@@ -1,0 +1,14 @@
+# Partition table for a 4 MB ESP32, compatible with WLED (its standard
+# WLED_ESP32_4MB_1MB_FS layout): two 1.5 MB app slots at WLED's offsets, so
+# this firmware and WLED can each install the other through their update
+# pages (each writes the slot it is not running from). The end of WLED's
+# filesystem holds this firmware's trial record and settings (WLED finds its
+# filesystem by name and uses the size given here).
+# Name,     Type, SubType,   Offset,   Size
+nvs,        data, nvs,       0x9000,   0x5000
+otadata,    data, ota,       0xe000,   0x2000
+app0,       app,  ota_0,     0x10000,  0x180000
+app1,       app,  ota_1,     0x190000, 0x180000
+spiffs,     data, spiffs,    0x310000, 0xEB000
+bootstate,  data, undefined, 0x3FB000, 0x1000
+storage,    data, undefined, 0x3FC000, 0x4000

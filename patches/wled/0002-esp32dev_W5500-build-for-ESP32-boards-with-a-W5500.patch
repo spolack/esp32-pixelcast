@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Thu, 5 Nov 2026 00:23:12 +0100
+Subject: [PATCH 2/6] esp32dev_W5500: build for ESP32 boards with a W5500
+
+For the ArtnetNode-ESP32 carrier and similar boards: W5500 on VSPI (CS 5,
+INT 4, reset on EN) as the default Ethernet board, GPIO 25 as the
+active-low enable of the level shifter, the four-line display usermod
+for the 128x32 I2C OLED on 21/22 next to audioreactive, and no button,
+relay or IR pin defaults on the pins the W5500 and BOOT use.
+---
+ platformio.ini | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/platformio.ini b/platformio.ini
+index 3bf227bf..5d9b8ce9 100644
+--- a/platformio.ini
++++ b/platformio.ini
+@@ -781,6 +781,19 @@ monitor_filters = esp32_exception_decoder
+ board_build.partitions = ${esp32.default_partitions}
+ board_build.flash_mode = dio
+ 
++;; ESP32 with a W5500 Ethernet chip over SPI instead of an RMII PHY, e.g.
++;; the ArtnetNode-ESP32 carrier: SCLK 18, MISO 19, MOSI 23, CS 5, INT 4
++;; (reset on EN), GPIO 25 as the active-low enable of its level shifter, and
++;; a 128x32 I2C OLED on SDA 21 / SCL 22.
++[env:esp32dev_W5500]
++extends = env:esp32dev
++custom_usermods = ${common.default_usermods} four_line_display_ALT
++build_flags = ${common.build_flags} ${esp32_idf_V5.build_flags} -D WLED_RELEASE_NAME=\"ESP32_W5500\"
++              -DARDUINO_USB_CDC_ON_BOOT=0
++              -D WLED_USE_ETHERNET -D WLED_ETH_DEFAULT=16 -D WLED_W5500_OE=25
++              -D BTNPIN=-1 -D RLYPIN=-1 -D IRPIN=-1 ;; GPIO 0 is BOOT; keep 4/5 for the W5500
++              -D I2CSDAPIN=21 -D I2CSCLPIN=22 ;; global I2C pins (the display usermod uses them)
++
+ [env:esp32dev_debug]
+ extends = env:esp32dev
+ ;;build_type = debug ;; disabled - leads to stack smashing in ArduinoJSON "Unhandled debug exception: Stack canary watchpoint triggered (loopTask)"

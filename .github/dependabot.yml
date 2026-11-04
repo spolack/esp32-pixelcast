@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories: ["/", "/core", "/updater"]
+    schedule:
+      interval: weekly
+    groups:
+      esp-rs:
+        patterns: ["esp-*", "embassy-*", "xtensa-*"]
+    ignore:
+      # Carried with patches/embassy-net-wiznet against exactly this version
+      # (tools/build.sh deps); bump by hand together with the patch.
+      - dependency-name: embassy-net-wiznet
+      # Must match what the firmware links (updater/Cargo.toml).
+      - dependency-name: esp-rom-sys
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

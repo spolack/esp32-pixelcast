@@ -1,0 +1,17 @@
+# Keep compilation settings in this file and user/runtime settings in `esp-config.toml`.
+include = ["esp-config.toml"]
+
+[target.xtensa-esp32-none-elf]
+# Flashing over USB writes the partition table and resets the OTA selection,
+# so the board boots the image just flashed into ota_0.
+runner = "espflash flash --monitor --chip esp32 --partition-table partitions.csv --erase-parts otadata,bootstate"
+
+[build]
+rustflags = [
+  "-C", "link-arg=-nostartfiles",
+]
+
+target = "xtensa-esp32-none-elf"
+
+[unstable]
+build-std = ["alloc", "core"]

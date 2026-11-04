@@ -1,0 +1,288 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Thu, 5 Nov 2026 00:22:25 +0100
+Subject: [PATCH 1/6] Ethernet: W5500 over SPI
+
+A new Ethernet board type, "W5500 (SPI)" (WLED_ETH_W5500), for boards
+with a W5500 instead of an RMII PHY. It needs a core with the W5500
+driver (CONFIG_ETH_SPI_ETHERNET_W5500, as Arduino core 3 has for the
+ESP32); without, choosing it only logs that. Pins are build flags
+(WLED_W5500_SCLK/MISO/MOSI/CS/INT/RST, default VSPI with CS 5 and INT 4)
+plus WLED_W5500_OE, an active-low output enable driven low (e.g. a level
+shifter that also carries the LED outputs).
+
+Only its own pins are reserved: the RMII pins (19, 21, 22, 25, 26, 27)
+stay free, as they are often LED outputs or I2C on such boards. The pins
+of the selected board are listed in one place (ethernetPins), used for
+the pin reservation report and the configuration.
+---
+ wled00/cfg.cpp                | 19 ++-----
+ wled00/const.h                |  3 +-
+ wled00/data/settings_wifi.htm |  1 +
+ wled00/network.cpp            | 95 ++++++++++++++++++++++++++++++++---
+ wled00/wled_ethernet.h        | 31 ++++++++++++
+ wled00/xml.cpp                | 24 +++------
+ 6 files changed, 133 insertions(+), 40 deletions(-)
+
+diff --git a/wled00/cfg.cpp b/wled00/cfg.cpp
+index 304e1a4c..8a67f646 100644
+--- a/wled00/cfg.cpp
++++ b/wled00/cfg.cpp
+@@ -978,22 +978,9 @@ void serializeConfig(JsonObject root) {
+   setConfigValue(ethernet, "type", ethernetType);
+   if (ethernetType != WLED_ETH_NONE && ethernetType < WLED_NUM_ETH_TYPES) {
+     JsonArray pins = ethernet.createNestedArray("pin");
+-    for (unsigned p=0; p<WLED_ETH_RSVD_PINS_COUNT; p++) pins.add(esp32_nonconfigurable_ethernet_pins[p].pin);
+-    if (ethernetBoards[ethernetType].eth_power>=0)     pins.add(ethernetBoards[ethernetType].eth_power);
+-    if (ethernetBoards[ethernetType].eth_mdc>=0)       pins.add(ethernetBoards[ethernetType].eth_mdc);
+-    if (ethernetBoards[ethernetType].eth_mdio>=0)      pins.add(ethernetBoards[ethernetType].eth_mdio);
+-    switch (ethernetBoards[ethernetType].eth_clk_mode) {
+-      case ETH_CLOCK_GPIO0_IN:
+-      case ETH_CLOCK_GPIO0_OUT:
+-        pins.add(0);
+-        break;
+-      case ETH_CLOCK_GPIO16_OUT:
+-        pins.add(16);
+-        break;
+-      case ETH_CLOCK_GPIO17_OUT:
+-        pins.add(17);
+-        break;
+-    }
++    int8_t ethPins[16];
++    unsigned n = ethernetPins(ethernetType, ethPins);
++    for (unsigned p = 0; p < n; p++) pins.add(ethPins[p]);
+   }
+ #endif
+ 
+diff --git a/wled00/const.h b/wled00/const.h
+index 458a9465..c6f78c52 100644
+--- a/wled00/const.h
++++ b/wled00/const.h
+@@ -447,7 +447,7 @@ static_assert(WLED_MAX_BUSSES <= 32, "WLED_MAX_BUSSES exceeds hard limit");
+ #define BTN_TYPE_TOUCH_SWITCH     9
+ 
+ //Ethernet board types
+-#define WLED_NUM_ETH_TYPES        16
++#define WLED_NUM_ETH_TYPES        17
+ 
+ 
+ #define WLED_ETH_NONE              0
+@@ -466,6 +466,7 @@ static_assert(WLED_MAX_BUSSES <= 32, "WLED_MAX_BUSSES exceeds hard limit");
+ #define WLED_ETH_GLEDOPTO         13
+ #define WLED_ETH_QUINLED_V4_UNOQUAD  14
+ #define WLED_ETH_QUINLED_V4_OCTA     15
++#define WLED_ETH_W5500               16
+ 
+ 
+ //Hue error codes
+diff --git a/wled00/data/settings_wifi.htm b/wled00/data/settings_wifi.htm
+index bdd82553..ee98cd70 100644
+--- a/wled00/data/settings_wifi.htm
++++ b/wled00/data/settings_wifi.htm
+@@ -236,6 +236,7 @@ Static subnet mask:<br>
+ 			<option value="8">QuinLED Octa & T-ETH-POE</option>
+ 			<option value="14">QuinLED v4 Uno/Quad</option>
+ 			<option value="15">QuinLED v4 Octa</option>
++			<option value="16">W5500 (SPI)</option>
+ 			<option value="10">Serg74-ETH32</option>
+ 			<option value="5">TwilightLord-ESP32</option>
+ 			<option value="3">WESP32</option>
+diff --git a/wled00/network.cpp b/wled00/network.cpp
+index ed75b893..832e66f0 100644
+--- a/wled00/network.cpp
++++ b/wled00/network.cpp
+@@ -176,8 +176,88 @@ const ethernet_settings ethernetBoards[] = {
+     ETH_PHY_LAN8720,     // eth_type
+     ETH_CLOCK_GPIO0_IN   // eth_clk_mode
+   },
++
++  // WLED_ETH_W5500 (16) - W5500 over SPI (pins: wled_ethernet.h)
++  {
++    1,                   // eth_address
++    -1,                  // eth_power
++    -1,                  // eth_mdc (unused)
++    -1,                  // eth_mdio (unused)
++#ifdef CONFIG_ETH_SPI_ETHERNET_W5500
++    ETH_PHY_W5500,       // eth_type
++#else
++    ETH_PHY_LAN8720,     // placeholder: this core has no W5500 driver
++#endif
++    ETH_CLOCK_GPIO0_IN   // eth_clk_mode (unused)
++  },
+ };
+ 
++unsigned ethernetPins(uint8_t type, int8_t pins[16]) {
++  unsigned n = 0;
++  if (type == WLED_ETH_NONE || type >= WLED_NUM_ETH_TYPES) return 0;
++  if (type == WLED_ETH_W5500) {
++    const int8_t spi[] = { WLED_W5500_SCLK, WLED_W5500_MISO, WLED_W5500_MOSI, WLED_W5500_CS, WLED_W5500_INT, WLED_W5500_RST, WLED_W5500_OE };
++    for (int8_t p : spi) if (p >= 0) pins[n++] = p;
++    return n;
++  }
++  for (unsigned p = 0; p < WLED_ETH_RSVD_PINS_COUNT; p++) pins[n++] = esp32_nonconfigurable_ethernet_pins[p].pin;
++  const ethernet_settings &es = ethernetBoards[type];
++  if (es.eth_power >= 0) pins[n++] = es.eth_power;
++  if (es.eth_mdc >= 0)   pins[n++] = es.eth_mdc;
++  if (es.eth_mdio >= 0)  pins[n++] = es.eth_mdio;
++  switch (es.eth_clk_mode) {
++    case ETH_CLOCK_GPIO0_IN:
++    case ETH_CLOCK_GPIO0_OUT:  pins[n++] = 0;  break;
++    case ETH_CLOCK_GPIO16_OUT: pins[n++] = 16; break;
++    case ETH_CLOCK_GPIO17_OUT: pins[n++] = 17; break;
++    default: break;
++  }
++  return n;
++}
++
++// The static address from the first WiFi entry (as WLED uses it for WiFi too).
++static void ethernetStaticConfig() {
++  // https://github.com/wled/WLED/issues/5247
++  if (multiWiFi.size() && multiWiFi[0].staticIP != IPAddress() && multiWiFi[0].staticGW != IPAddress()) {
++    ETH.config(multiWiFi[0].staticIP, multiWiFi[0].staticGW, multiWiFi[0].staticSN, dnsAddress);
++  } else {
++    ETH.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
++  }
++}
++
++// W5500 over SPI: its own pins instead of the RMII ones.
++static bool beginW5500() {
++#ifndef CONFIG_ETH_SPI_ETHERNET_W5500
++  DEBUG_PRINTLN(F("initE: this build has no W5500 driver (needs Arduino core 3)"));
++  return false;
++#else
++  managed_pin_type pins[7];
++  unsigned n = 0;
++  pins[n++] = { (int8_t)WLED_W5500_SCLK, true };
++  pins[n++] = { (int8_t)WLED_W5500_MISO, false };
++  pins[n++] = { (int8_t)WLED_W5500_MOSI, true };
++  pins[n++] = { (int8_t)WLED_W5500_CS,   true };
++  pins[n++] = { (int8_t)WLED_W5500_INT,  false };
++  if (WLED_W5500_RST >= 0) pins[n++] = { (int8_t)WLED_W5500_RST, true };
++  if (WLED_W5500_OE >= 0)  pins[n++] = { (int8_t)WLED_W5500_OE,  true };
++  if (!PinManager::allocateMultiplePins(pins, n, PinOwner::Ethernet)) {
++    DEBUG_PRINTLN(F("initE: Failed to allocate W5500 pins"));
++    return false;
++  }
++  if (WLED_W5500_OE >= 0) {
++    pinMode(WLED_W5500_OE, OUTPUT);
++    digitalWrite(WLED_W5500_OE, LOW);
++  }
++  SPI.begin(WLED_W5500_SCLK, WLED_W5500_MISO, WLED_W5500_MOSI);
++  if (!ETH.begin(ETH_PHY_W5500, 1, WLED_W5500_CS, WLED_W5500_INT, WLED_W5500_RST, SPI)) {
++    DEBUG_PRINTLN(F("initE: ETH.begin() failed (W5500)"));
++    for (unsigned i = 0; i < n; i++) PinManager::deallocatePin(pins[i].pin, PinOwner::Ethernet);
++    return false;
++  }
++  return true;
++#endif
++}
++
+ // sanity checks for ethernet config table and WLED_ETH_DEFAULT
+ static_assert((sizeof(ethernetBoards)/sizeof(ethernetBoards[0])) == WLED_NUM_ETH_TYPES, "WLED_NUM_ETH_TYPES does not match size of ethernetBoards[] table.");
+ 
+@@ -211,6 +291,14 @@ bool initEthernet()
+ 
+   DEBUG_PRINTF_P(PSTR("initE: Attempting ETH config: %d\n"), ethernetType);
+ 
++  if (ethernetType == WLED_ETH_W5500) {
++    if (!beginW5500()) return false;
++    ethernetStaticConfig();
++    successfullyConfiguredEthernet = true;
++    DEBUG_PRINTLN(F("initE: *** Ethernet successfully configured! ***"));
++    return true;
++  }
++
+   // Ethernet initialization should only succeed once -- else reboot required
+   ethernet_settings es = ethernetBoards[ethernetType];
+   managed_pin_type pinsToAllocate[10] = {
+@@ -294,12 +382,7 @@ bool initEthernet()
+     return false;
+   }
+ 
+-  // https://github.com/wled/WLED/issues/5247
+-  if (multiWiFi.size() && multiWiFi[0].staticIP != IPAddress() && multiWiFi[0].staticGW != IPAddress()) {
+-    ETH.config(multiWiFi[0].staticIP, multiWiFi[0].staticGW, multiWiFi[0].staticSN, dnsAddress);
+-  } else {
+-    ETH.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
+-  }
++  ethernetStaticConfig();
+ 
+   successfullyConfiguredEthernet = true;
+   DEBUG_PRINTLN(F("initE: *** Ethernet successfully configured! ***"));
+diff --git a/wled00/wled_ethernet.h b/wled00/wled_ethernet.h
+index 6b8f0ba5..2375abc1 100644
+--- a/wled00/wled_ethernet.h
++++ b/wled00/wled_ethernet.h
+@@ -28,6 +28,37 @@ typedef struct EthernetSettings {
+ 
+ extern const ethernet_settings ethernetBoards[];
+ 
++// WLED_ETH_W5500: a W5500 over SPI instead of an RMII PHY. Needs a core with
++// the W5500 driver (CONFIG_ETH_SPI_ETHERNET_W5500: Arduino core 3 on the
++// ESP32). Pins as build flags; the defaults are VSPI plus CS and INT as on
++// the ArtnetNode-ESP32 carrier. WLED_W5500_OE: an active-low output enable
++// to drive low (e.g. a level shifter that also carries the LED outputs).
++#ifndef WLED_W5500_SCLK
++  #define WLED_W5500_SCLK 18
++#endif
++#ifndef WLED_W5500_MISO
++  #define WLED_W5500_MISO 19
++#endif
++#ifndef WLED_W5500_MOSI
++  #define WLED_W5500_MOSI 23
++#endif
++#ifndef WLED_W5500_CS
++  #define WLED_W5500_CS 5
++#endif
++#ifndef WLED_W5500_INT
++  #define WLED_W5500_INT 4
++#endif
++#ifndef WLED_W5500_RST
++  #define WLED_W5500_RST -1
++#endif
++#ifndef WLED_W5500_OE
++  #define WLED_W5500_OE -1
++#endif
++
++// The pins the given Ethernet board type uses (for reporting them as
++// reserved); returns how many it wrote to pins.
++unsigned ethernetPins(uint8_t type, int8_t pins[16]);
++
+ #define WLED_ETH_RSVD_PINS_COUNT 6
+ extern const managed_pin_type esp32_nonconfigurable_ethernet_pins[WLED_ETH_RSVD_PINS_COUNT];
+ #endif
+diff --git a/wled00/xml.cpp b/wled00/xml.cpp
+index 76a133ea..73685502 100644
+--- a/wled00/xml.cpp
++++ b/wled00/xml.cpp
+@@ -132,23 +132,13 @@ static void appendGPIOinfo(Print& settingsScript)
+   firstPin = false;
+   #endif
+   #if defined(ARDUINO_ARCH_ESP32) && defined(WLED_USE_ETHERNET)
+-  if (ethernetType != WLED_ETH_NONE && ethernetType < WLED_NUM_ETH_TYPES) {
+-    if (!firstPin) settingsScript.print(',');
+-    for (unsigned p=0; p<WLED_ETH_RSVD_PINS_COUNT; p++) { settingsScript.printf("%d,",esp32_nonconfigurable_ethernet_pins[p].pin); }
+-    if (ethernetBoards[ethernetType].eth_power >= 0)    { settingsScript.printf("%d,",ethernetBoards[ethernetType].eth_power); }
+-    if (ethernetBoards[ethernetType].eth_mdc >= 0)      { settingsScript.printf("%d,",ethernetBoards[ethernetType].eth_mdc); }
+-    if (ethernetBoards[ethernetType].eth_mdio >= 0)     { settingsScript.printf("%d,",ethernetBoards[ethernetType].eth_mdio); }
+-    switch (ethernetBoards[ethernetType].eth_clk_mode)  {
+-      case ETH_CLOCK_GPIO0_IN:
+-      case ETH_CLOCK_GPIO0_OUT:
+-        settingsScript.print(0);
+-        break;
+-      case ETH_CLOCK_GPIO16_OUT:
+-        settingsScript.print(16);
+-        break;
+-      case ETH_CLOCK_GPIO17_OUT:
+-        settingsScript.print(17);
+-        break;
++  {
++    int8_t ethPins[16];
++    unsigned n = ethernetPins(ethernetType, ethPins);
++    for (unsigned p = 0; p < n; p++) {
++      if (!firstPin) settingsScript.print(',');
++      settingsScript.print(ethPins[p]);
++      firstPin = false;
+     }
+   }
+   #endif

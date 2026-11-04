@@ -1,0 +1,25 @@
+[package]
+name = "updater"
+edition = "2024"
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+description = "In-place updater: a RAM-only firmware that receives the new image over the W5500's hardware TCP and writes it into the slot (see core/src/inplace.rs)."
+
+# Its own workspace: built separately, for the chip only.
+[workspace]
+
+[dependencies]
+# IDF's patched SPI flash routines and the ROM address scripts (the ESP32
+# ROM's own esp_rom_spiflash_write corrupts data). Same version as the
+# firmware uses.
+esp-rom-sys = { version = "=0.1.5", features = ["esp32"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
+
+[profile.dev]
+panic = "abort"
