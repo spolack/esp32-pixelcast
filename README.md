@@ -20,10 +20,26 @@ details in [`docs/api.md`](docs/api.md).
 | Art-Net, 4 universes | 3000 packets/s | 0 % |
 | sACN, 16 universes | 2080 packets/s (130 fps) | 0 % |
 | sACN multicast | 2400 packets/s | 0 % |
-| Burst, all universes back to back at wire speed | 36 universes | 0 % |
-| | 48 universes | 1.2 % |
+| Burst, all universes of a frame back to back at wire speed, 40 fps | 36 universes | 0 % |
+| | 48 universes | 1.2–1.9 % |
 
-Without fast flash: about 1500 (Art-Net) and 1150 (sACN) packets/s.
+Without fast flash: about 1500 (Art-Net) and 1150 (sACN) packets/s. The
+board turns fast flash off after an unexpected restart until the next
+power-on (`/api/status`: `flash.fast` reads `after_crash`); check it reads
+`qio80` before measuring.
+
+With the microphone on (audio universe sent 44 times a second; measured
+2026-11-05, alternating runs, 4 × 512 RGBW):
+
+| Input | Audio off | Audio on |
+|---|---|---|
+| Art-Net, 16 universes at 170 fps (2720 packets/s) | 0 % | 0 % |
+| Burst, 36 universes at 40 fps | 0 % | 0.0–0.1 % |
+| Burst, 48 universes at 40 fps | 1.9 % | 4.1–4.2 % |
+
+Up to 36 universes the microphone costs nothing measurable; at 48-universe
+bursts it adds about 2 percentage points of loss (per packet 16.0 instead
+of 15.5 µs).
 
 | Output | |
 |---|---|

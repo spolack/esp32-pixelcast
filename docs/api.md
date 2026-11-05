@@ -343,10 +343,11 @@ must not be an LED universe nor the audio universe.
 | 10 | freeze: > 127 holds the output values |
 | 11 | tap: each rise through 128 is a beat (the tempo follows the taps) |
 
-Cost (measured, fast flash, alternating runs): 16 universes at 170 fps
-stay at 0 % loss with audio on; 36-universe bursts read 0.0–0.2 % with and
-0.1–0.3 % without. Beyond the limits, at 48-universe bursts, loss rises by
-about one percentage point (3.3–4.0 % to 4.4–5.0 %).
+Cost (measured, fast flash, alternating runs; table in README.md): 16
+universes at 170 fps stay at 0 % loss with audio on; 36-universe bursts at
+40 fps read 0.0–0.1 % with and 0 % without. Beyond the limits, at
+48-universe bursts, loss rises by about two percentage points (1.9 % to
+4.1–4.2 %).
 
 ## Art-Net / sACN behaviour
 - ArtPoll → one ArtPollReply per group of up to four universes sharing
