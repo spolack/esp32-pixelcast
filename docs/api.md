@@ -317,9 +317,9 @@ ctl_univ, ctl_addr}`.
   the previous request (a poller then sees the hits between its requests).
   `restarts`: times the capture restarted after its DMA stopped (no data
   for 20 ms; should stay 0). `overruns`: times the capture task came back
-  after the ring (10.7 ms) had filled, losing the audio beyond that (one at
-  start-up; otherwise only under heavy HTTP load, e.g. 5 settings requests
-  a second). `max_gap_us`: the longest the capture task was away since the
+  after the ring (10.7 ms; PDM 21 ms) had filled; the capture then restarts
+  (a gap of that length). One at start-up; otherwise only under heavy HTTP
+  load (e.g. 5 settings requests a second). `max_gap_us`: the longest the capture task was away since the
   previous request.
 - `POST /audio-beat` (login + `X-Requested-With`): sends one beat (channels
   4 and 9 for 80 ms), to check a console's mapping without music.

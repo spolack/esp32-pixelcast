@@ -5,10 +5,12 @@
 //! descriptor, so a reader more than about one chunk late lets it load the
 //! end of the list before the link is there: it then stops with free room
 //! left (esp-hal issue 2269). Here the links never change; the DMA runs
-//! for good, and a reader a whole ring late loses data instead
-//! ([`RingView::overrun`]).
+//! for good; a reader a whole ring late sees [`RingView::overrun`] and
+//! restarts the transfer.
 
-use esp_hal::dma::{BurstConfig, DmaDescriptor, DmaRxBuffer, Owner, Preparation};
+use core::sync::atomic::{Ordering, compiler_fence};
+
+use esp_hal::dma::{BurstConfig, DmaDescriptor, DmaDescriptorFlags, DmaRxBuffer, Preparation};
 
 pub struct Ring {
     descriptors: &'static mut [DmaDescriptor],
@@ -79,33 +81,37 @@ pub struct RingView {
 }
 
 impl RingView {
-    /// The descriptor `k` places after the read position, as the DMA last
-    /// wrote it.
-    fn desc(&self, k: usize) -> DmaDescriptor {
+    /// The flags of the descriptor `k` places after the read position, as
+    /// the DMA last wrote them (owner `true`: still the DMA's).
+    fn flags(&self, k: usize) -> DmaDescriptorFlags {
         let i = (self.idx + k) % self.ring.descriptors.len();
-        // SAFETY: a valid descriptor; volatile, since the DMA writes it.
-        unsafe { core::ptr::read_volatile(&raw const self.ring.descriptors[i]) }
+        // SAFETY: `i` is within the slice; volatile and through a raw
+        // pointer, since the DMA writes the flags.
+        let f = unsafe { core::ptr::read_volatile(&raw const (*self.ring.descriptors.as_ptr().add(i)).flags) };
+        // The buffer bytes of a filled descriptor are read after its flags.
+        compiler_fence(Ordering::Acquire);
+        f
     }
 
     /// Bytes ready to read (all filled descriptors from the read position).
     pub fn available_bytes(&self) -> usize {
         let mut n = 0;
         for k in 0..self.ring.descriptors.len() {
-            let d = self.desc(k);
-            if d.owner() == Owner::Dma {
+            let f = self.flags(k);
+            if f.owner() {
                 break;
             }
-            n += d.len();
+            n += usize::from(f.length());
         }
-        n - self.offset
+        n.saturating_sub(self.offset)
     }
 
     /// Every descriptor is filled: the DMA has caught up with the reader
-    /// and is overwriting what it has not read. Reading on in ring order
-    /// gets back behind the DMA by itself (it writes in that order too);
-    /// up to a ring of audio is lost or out of order.
+    /// and is overwriting what it has not read. The order of the chunks is
+    /// lost then (filled descriptors stay filled, a lap old): restart the
+    /// transfer, which resets the ring.
     pub fn overrun(&self) -> bool {
-        (0..self.ring.descriptors.len()).all(|k| self.desc(k).owner() == Owner::Cpu)
+        (0..self.ring.descriptors.len()).all(|k| !self.flags(k).owner())
     }
 
     /// The ready bytes that lie in one piece (up to the end of the buffer or
@@ -114,12 +120,12 @@ impl RingView {
         let n = self.ring.descriptors.len();
         let mut len = 0;
         for k in 0..n - self.idx {
-            let d = self.desc(k);
-            if d.owner() == Owner::Dma {
+            let f = self.flags(k);
+            if f.owner() {
                 break;
             }
-            len += d.len();
-            if d.len() < d.size() {
+            len += usize::from(f.length());
+            if f.length() < f.size() {
                 break;
             }
         }
@@ -133,21 +139,24 @@ impl RingView {
         let total = n;
         let count = self.ring.descriptors.len();
         while n > 0 {
-            let d = self.desc(0);
-            if d.owner() == Owner::Dma {
+            let mut f = self.flags(0);
+            if f.owner() {
                 break;
             }
-            let left = d.len() - self.offset;
+            let left = usize::from(f.length()).saturating_sub(self.offset);
             if n < left {
                 self.offset += n;
                 return total;
             }
             n -= left;
-            let desc = &mut self.ring.descriptors[self.idx];
-            let mut fresh = d;
-            fresh.reset_for_rx();
-            // SAFETY: a valid descriptor; volatile, since the DMA reads it.
-            unsafe { core::ptr::write_volatile(&raw mut desc.flags, fresh.flags) };
+            // Back to the DMA: owned by it, empty, no EOF.
+            f.set_owner(true);
+            f.set_length(0);
+            f.set_suc_eof(false);
+            // The bytes were read before the descriptor goes back.
+            compiler_fence(Ordering::Release);
+            // SAFETY: `idx` is within the slice; volatile, the DMA reads it.
+            unsafe { core::ptr::write_volatile(&raw mut (*self.ring.descriptors.as_mut_ptr().add(self.idx)).flags, f) };
             self.idx = (self.idx + 1) % count;
             self.offset = 0;
         }

@@ -97,8 +97,8 @@ fn ring() -> Option<Ring> {
 
 /// The latest snapshot, for `/api/audio`; `None` while audio is off.
 static LAST: Mutex<CriticalSectionRawMutex, Cell<Option<Snapshot>>> = Mutex::new(Cell::new(None));
-/// Restarts of the capture after the DMA stopped (no data for 20 ms; the
-/// ring never ends, so only a DMA error stops it), for `/api/audio`.
+/// Restarts of the capture after a DMA error or 20 ms without data (the
+/// ring never ends, so neither should happen), for `/api/audio`.
 static RESTARTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn restarts() -> u32 {
@@ -106,7 +106,8 @@ pub fn restarts() -> u32 {
 }
 
 /// Times the task came so late that the DMA had filled the whole ring
-/// (~10.7 ms): up to that much audio lost. For `/api/audio`.
+/// (~10.7 ms of I2S, ~21 ms of PDM audio); the capture restarts then, the
+/// audio has a gap. For `/api/audio`.
 static OVERRUNS: AtomicU32 = AtomicU32::new(0);
 
 pub fn overruns() -> u32 {
@@ -206,6 +207,8 @@ pub async fn run(pins: Mic) -> ! {
         warn!("audio: DMA ring setup failed");
         idle_fault().await
     };
+    // Set up before the capture starts: the ring fills from then on.
+    let mut analyzer = Analyzer::new();
     let mut transfer = match rx.read(buf) {
         Ok(t) => t,
         Err((e, _, _)) => {
@@ -215,10 +218,10 @@ pub async fn run(pins: Mic) -> ! {
     };
     info!("audio: capturing from a {} mic at {} Hz", mic.kind.key(), I2S_RATE);
 
-    let mut analyzer = Analyzer::new();
     let mut sequence = 0u8;
     let started = Instant::now();
     let mut last_data = Instant::now();
+    let mut last_start = Instant::now();
     let mut next_fault_frame = Instant::now();
     let (mut acc, mut n_acc) = (0i32, 0u32);
     // Freeze holds this; the tap channel's last state (edges are taps).
@@ -231,9 +234,15 @@ pub async fn run(pins: Mic) -> ! {
         // the interrupt alone does not always wake the task).
         // `peek` gives the contiguous part only (up to the ring's end): with
         // more waiting, go on at once.
+        // An error stays pending (the wait would return at once): restart.
+        let mut dma_error = false;
         if !more {
-            let _ = with_timeout(Duration::from_millis(3), transfer.wait_for_available_async()).await;
+            dma_error = matches!(
+                with_timeout(Duration::from_millis(3), transfer.wait_for_available_async()).await,
+                Ok(Err(_))
+            );
         }
+        more = false;
         let gap = woke.elapsed().as_micros() as u32;
         MAX_GAP_US.fetch_max(gap, Ordering::Relaxed);
         woke = Instant::now();
@@ -258,27 +267,29 @@ pub async fn run(pins: Mic) -> ! {
         // Whole samples, processed in place in the ring.
         let available = transfer.peek().len();
         let got = available - available % width;
-        if transfer.overrun() {
-            OVERRUNS.fetch_add(1, Ordering::Relaxed);
+        // Start the capture again (a few ms gap) when the DMA lapped the
+        // reader (the ring is out of order then: some chunks a lap old), an
+        // error is pending, or nothing came for 20 ms (seven chunks).
+        let overrun = transfer.overrun();
+        let stalled = got == 0 && last_data.max(last_start).elapsed() >= Duration::from_millis(20);
+        if overrun || dma_error || stalled {
+            let (rx, ring) = transfer.stop();
+            let Some(t) = rx.read(ring).ok() else {
+                warn!("audio: I2S restart failed");
+                idle_fault().await
+            };
+            transfer = t;
+            last_start = Instant::now();
+            if overrun { &OVERRUNS } else { &RESTARTS }.fetch_add(1, Ordering::Relaxed);
+            if got > 0 {
+                // What `peek` showed belongs to the stopped transfer.
+                continue;
+            }
         }
         if !audio.on {
             transfer.consume(got);
             LAST.lock(|c| c.set(None));
             continue;
-        }
-        // Nothing for 20 ms (seven chunks): the DMA has stopped after an
-        // error. Start it again.
-        if got == 0 && last_data.elapsed() >= Duration::from_millis(20) {
-            let (rx, ring) = transfer.stop();
-            let restarted = rx.read(ring).ok();
-            let Some(t) = restarted else {
-                warn!("audio: I2S restart failed");
-                idle_fault().await
-            };
-            transfer = t;
-            RESTARTS.fetch_add(1, Ordering::Relaxed);
-            // Give the restarted DMA its first chunk before judging again.
-            last_data = Instant::now();
         }
         if got == 0 {
             // No samples for half a second: the mic or its clock is gone.
