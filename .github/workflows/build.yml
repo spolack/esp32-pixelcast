@@ -52,7 +52,7 @@ jobs:
     needs: bootloader
     steps:
       - uses: actions/checkout@v7
-      - uses: esp-rs/xtensa-toolchain@v1.5
+      - uses: esp-rs/xtensa-toolchain@v1.7
         with:
           default: true
           buildtargets: esp32
@@ -65,7 +65,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: espflash@4.7.0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install esptool
@@ -94,7 +94,7 @@ jobs:
         name: [wled]
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # What dualboot/wled/build.sh needs: PlatformIO, and Node for WLED's
