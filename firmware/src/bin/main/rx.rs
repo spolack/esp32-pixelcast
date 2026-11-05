@@ -67,9 +67,18 @@ pub(crate) async fn answer_poll(
     });
     for (i, b) in replies.iter().flatten().enumerate() {
         artnet::poll_reply(&mut reply, &node, b, i as u8 + 1);
-        if let Err(e) = socket.send_to(&reply, to).await {
-            warn!("artnet: ArtPollReply to {} failed: {:?}", to, e);
-            return;
+        // A short limit: a reply to a host that does not answer ARP waits
+        // in the buffer.
+        match with_timeout(Duration::from_millis(20), socket.send_to(&reply, to)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                warn!("artnet: ArtPollReply to {} failed: {:?}", to, e);
+                return;
+            }
+            Err(_) => {
+                warn!("artnet: ArtPollReply to {} timed out", to);
+                return;
+            }
         }
     }
 }
@@ -137,6 +146,12 @@ pub(crate) fn apply_art_address(a: &artnet::Address) -> bool {
             }
         }
     }
+    // An output moved onto the audio or control universe would get no
+    // data (that universe is taken first): keep the old ports then.
+    if let Err(e) = s.audio_collision() {
+        warn!("artnet: ArtAddress ports refused: {}", e);
+        s.outputs = old.outputs.clone();
+    }
     let changed = s != old;
     if changed {
         info!("artnet: ArtAddress applied (bind {})", a.bind_index);
@@ -156,12 +171,22 @@ pub(crate) async fn artnet_task(
     rx_buf: &'static mut [u8],
 ) {
     const TICK: Duration = Duration::from_millis(250);
-    // Room for the ArtPollReplies of 16 universes (4 × 239 bytes) and the
-    // audio packets (sACN: 638 bytes). smoltcp keeps each packet in one
-    // piece, so the ring must hold twice the largest one, or a packet that
-    // does not fit before the wrap point never fits.
+    // Room for the ArtPollReplies of 16 universes (4 × 239 bytes).
     let mut tx_meta = [PacketMetadata::EMPTY; 5];
-    let mut tx_buf = [0u8; 2 * 640];
+    let mut tx_buf = [0u8; 1024];
+    // The audio universe has a socket of its own: frames to a host that
+    // does not answer ARP wait in its buffer, and would hold up the poll
+    // replies in a shared one. Same port (Art-Net is sent from 6454); it
+    // gets no packets, since smoltcp hands each one to the first socket
+    // that accepts it, in slot order, and this one is always created after
+    // the receive socket. Its ring holds two sACN packets (638 bytes;
+    // smoltcp keeps a packet in one piece). From the heap: normal RAM has
+    // no room.
+    let au_rx_meta = alloc::vec![PacketMetadata::EMPTY; 1].leak();
+    let au_rx_buf = alloc::vec![0u8; 16].leak();
+    let au_tx_meta = alloc::vec![PacketMetadata::EMPTY; 2].leak();
+    let au_tx_buf = alloc::vec![0u8; 2 * 640].leak();
+    let mut audio_out = AudioOut::default();
     let mut polls_answered = 0u16;
     // The largest packet through this socket is an sACN data packet (638
     // bytes; Art-Net DMX on Ethernet takes the fast path, 530 bytes on the
@@ -188,6 +213,10 @@ pub(crate) async fn artnet_task(
             Timer::after(Duration::from_secs(1)).await;
             continue;
         }
+        let mut audio_socket = UdpSocket::new(stack, &mut *au_rx_meta, &mut *au_rx_buf, &mut *au_tx_meta, &mut *au_tx_buf);
+        if let Err(e) = audio_socket.bind(port) {
+            warn!("audio: bind on {} failed: {:?}", name, e);
+        }
         // sACN is mostly sent to one multicast group per universe.
         let groups = if proto == settings::Protocol::Sacn { sacn_groups() } else { Default::default() };
         for g in groups.iter() {
@@ -213,7 +242,12 @@ pub(crate) async fn artnet_task(
             // always ready and would starve it.
             let event = select3(esp32_pixelcast::audio::TX.wait(), socket.recv_from(&mut buf), Timer::at(next_tick)).await;
             match event {
-                Either3::First(frame) => send_audio(&mut socket, stack, &frame).await,
+                Either3::First(frame) => {
+                    if send_audio(&mut audio_socket, stack, &frame, &mut audio_out) {
+                        // Recreate both sockets (in this order, see above).
+                        break;
+                    }
+                }
                 Either3::Second(Ok((len, meta))) => {
                     // sACN is translated into the Art-Net view (port-address
                     // from 0) so the LED output and the statistics see one
@@ -320,10 +354,24 @@ pub(crate) async fn artnet_task(
 /// Sends one frame of the audio universe from the receive socket (Art-Net
 /// from 6454, as the protocol expects), with the settings in effect: unicast
 /// to `dest`, else Art-Net broadcast or the sACN universe's multicast group.
-async fn send_audio(socket: &mut UdpSocket<'_>, stack: Stack<'static>, frame: &esp32_pixelcast::audio::Frame) {
+/// The audio socket's state between frames.
+#[derive(Default)]
+pub(crate) struct AudioOut {
+    /// Frames have not fitted since then, and where they went.
+    stuck: Option<(Instant, embassy_net::IpEndpoint)>,
+    /// No frames to this destination until then (it did not answer).
+    hold: Option<(embassy_net::IpEndpoint, Instant)>,
+}
+
+/// Sends one audio frame without waiting. Returns `true` when the socket's
+/// buffer has been full for a second (the destination does not answer
+/// ARP, so its frames stay there; smoltcp never drops them) or holds frames
+/// for an old destination: the caller then recreates the socket, which
+/// empties it.
+fn send_audio(socket: &mut UdpSocket<'_>, stack: Stack<'static>, frame: &esp32_pixelcast::audio::Frame, out: &mut AudioOut) -> bool {
     let a = settings::with(|s| s.audio);
     if !a.on {
-        return;
+        return false;
     }
     let sacn_universe = a.universe + 1;
     let (to, port) = match (a.protocol, a.dest) {
@@ -331,13 +379,28 @@ async fn send_audio(socket: &mut UdpSocket<'_>, stack: Stack<'static>, frame: &e
         (settings::Protocol::Sacn, None) => (sacn::multicast_group(sacn_universe).into(), sacn::PORT),
         (settings::Protocol::ArtNet, None) => match stack.config_v4() {
             Some(c) => (c.address.broadcast().unwrap_or(embassy_net::Ipv4Address::BROADCAST), artnet::PORT),
-            None => return,
+            None => return false,
         },
     };
     let to = embassy_net::IpEndpoint::new(embassy_net::IpAddress::Ipv4(to), port);
-    // Never hold up the receive task: a frame that cannot go out within
-    // 50 ms is dropped (the next one follows 23 ms later).
-    let send = async {
+    let now = Instant::now();
+    if let Some((dest, until)) = out.hold {
+        if dest == to && now < until {
+            return false;
+        }
+        out.hold = None;
+    }
+    if let Some((_, dest)) = out.stuck
+        && dest != to
+    {
+        // New destination: drop the old one's frames at once.
+        out.stuck = None;
+        return true;
+    }
+    // Never hold up the receive task: a frame that does not fit into the
+    // socket's buffer right now is dropped (the next follows 23 ms later).
+    // Frames to a host that does not answer ARP stay in that buffer.
+    let sent = embassy_futures::poll_once(async {
         match a.protocol {
         settings::Protocol::ArtNet => {
             socket
@@ -351,6 +414,9 @@ async fn send_audio(socket: &mut UdpSocket<'_>, stack: Stack<'static>, frame: &e
             // device name and "audio".
             let mut cid = *b"pixelcast\0\0\0\0\0\0\0";
             cid[10..16].copy_from_slice(&board::base_mac());
+            // A version 5 UUID, RFC 4122 variant (E1.31 asks for a UUID).
+            cid[6] = 0x50 | (cid[6] & 0x0f);
+            cid[8] = 0x80 | (cid[8] & 0x3f);
             let mut name = heapless::String::<64>::new();
             settings::with(|s| {
                 if s.name.is_empty() {
@@ -367,12 +433,22 @@ async fn send_audio(socket: &mut UdpSocket<'_>, stack: Stack<'static>, frame: &e
                 .await
             }
         }
-    };
-    match with_timeout(Duration::from_millis(50), send).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => warn!("audio: send to {} failed: {:?}", to, e),
-        Err(_) => warn!("audio: send to {} timed out; frame dropped", to),
+    });
+    match sent {
+        core::task::Poll::Ready(Ok(())) => out.stuck = None,
+        core::task::Poll::Ready(Err(e)) => warn!("audio: send to {} failed: {:?}", to, e),
+        core::task::Poll::Pending => {
+            esp32_pixelcast::audio::SEND_DROPPED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let (since, _) = *out.stuck.get_or_insert((now, to));
+            if now - since >= Duration::from_secs(1) {
+                warn!("audio: {} does not answer; frames to it paused for 5 s", to);
+                out.stuck = None;
+                out.hold = Some((to, now + Duration::from_secs(5)));
+                return true;
+            }
+        }
     }
+    false
 }
 
 /// Merge state and statistics, used by both paths.

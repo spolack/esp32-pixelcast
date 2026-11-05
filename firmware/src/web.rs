@@ -1026,6 +1026,7 @@ fn api_audio() -> String {
                 })
                 .field("restarts", crate::audio::restarts())
                 .field("overruns", crate::audio::overruns())
+                .field("send_dropped", crate::audio::SEND_DROPPED.load(core::sync::atomic::Ordering::Relaxed))
                 .field("max_gap_us", crate::audio::take_max_gap_us())
                 .field("control", crate::audio::controlled());
             if let Some(p) = crate::audio::effective() {

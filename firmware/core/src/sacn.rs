@@ -271,7 +271,10 @@ mod tests {
         let mut data = [0u8; 512];
         data[0] = 3;
         assert_eq!(&p[44..59], b"pixelcast audio");
-        assert_eq!(be16(&p, 16) & 0x0fff, (DATA_PACKET_LEN - 16) as u16);
+        // Flags and length of the root, framing and DMP layers (E1.31 5-7).
+        assert_eq!(be16(&p, 16), 0x7000 | (DATA_PACKET_LEN - 16) as u16);
+        assert_eq!(be16(&p, 38), 0x7000 | 600);
+        assert_eq!(be16(&p, 115), 0x7000 | 523);
         assert_eq!(
             parse(&p),
             Some(Packet::Data {

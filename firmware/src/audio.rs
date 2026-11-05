@@ -110,6 +110,11 @@ pub fn restarts() -> u32 {
 /// audio has a gap. For `/api/audio`.
 static OVERRUNS: AtomicU32 = AtomicU32::new(0);
 
+/// Audio frames dropped because the socket's buffer was full (the
+/// destination does not answer ARP, or the network is congested), for
+/// `/api/audio`.
+pub static SEND_DROPPED: AtomicU32 = AtomicU32::new(0);
+
 pub fn overruns() -> u32 {
     OVERRUNS.load(Ordering::Relaxed)
 }
@@ -136,12 +141,13 @@ const CONTROL_TIMEOUT_MS: u32 = 2500;
 
 /// For the receive path: if `universe` carries the control channels,
 /// takes them and returns true (the universe then feeds nothing else).
+#[esp_hal::ram]
 pub fn on_dmx(universe: u16, data: &[u8]) -> bool {
     let at = CONTROL_AT.load(Ordering::Relaxed);
     if at == u32::MAX || (at >> 16) as u16 != universe {
         return false;
     }
-    let first = (at & 0xffff) as usize - 1;
+    let first = ((at & 0xffff) as usize).saturating_sub(1);
     let mut c = [0u8; CONTROL_CHANNELS];
     for (k, v) in c.iter_mut().enumerate() {
         *v = data.get(first + k).copied().unwrap_or(0);
@@ -229,6 +235,12 @@ pub async fn run(pins: Mic) -> ! {
     let mut tapped = false;
     let mut woke = Instant::now();
     let mut more = false;
+    // Settings and console values, read every 20 ms (the wake-ups come
+    // ~370 times a second); the mic's settling time after a (re)start.
+    let mut refresh_at = Instant::now();
+    let mut audio = settings::with(|s| s.audio);
+    let (mut params, mut ctl) = (audio.params, an::Control::default());
+    let mut settle_until = started + Duration::from_millis(250);
     loop {
         // Woken by the DMA, at the latest after 3 ms (a chunk takes ~2.7 ms;
         // the interrupt alone does not always wake the task).
@@ -246,24 +258,27 @@ pub async fn run(pins: Mic) -> ! {
         let gap = woke.elapsed().as_micros() as u32;
         MAX_GAP_US.fetch_max(gap, Ordering::Relaxed);
         woke = Instant::now();
-        let audio = settings::with(|s| s.audio);
-        CONTROL_AT.store(
-            if audio.on && audio.control {
-                (u32::from(audio.control_universe) << 16) | u32::from(audio.control_address)
-            } else {
-                u32::MAX
-            },
-            Ordering::Relaxed,
-        );
-        let (params, ctl) = match control() {
-            Some(c) => an::apply_control(&audio.params, &c),
-            None => (audio.params, an::Control::default()),
-        };
-        EFFECTIVE.lock(|c| c.set(Some(params)));
-        if ctl.tap && !tapped {
-            analyzer.tap();
+        if woke >= refresh_at {
+            refresh_at = woke + Duration::from_millis(20);
+            audio = settings::with(|s| s.audio);
+            CONTROL_AT.store(
+                if audio.on && audio.control {
+                    (u32::from(audio.control_universe) << 16) | u32::from(audio.control_address)
+                } else {
+                    u32::MAX
+                },
+                Ordering::Relaxed,
+            );
+            (params, ctl) = match control() {
+                Some(c) => an::apply_control(&audio.params, &c),
+                None => (audio.params, an::Control::default()),
+            };
+            EFFECTIVE.lock(|c| c.set(Some(params)));
+            if ctl.tap && !tapped {
+                analyzer.tap();
+            }
+            tapped = ctl.tap;
         }
-        tapped = ctl.tap;
         // Whole samples, processed in place in the ring.
         let available = transfer.peek().len();
         let got = available - available % width;
@@ -280,6 +295,8 @@ pub async fn run(pins: Mic) -> ! {
             };
             transfer = t;
             last_start = Instant::now();
+            // The clock stopped only briefly: the mic is back within ms.
+            settle_until = settle_until.max(last_start + Duration::from_millis(20));
             if overrun { &OVERRUNS } else { &RESTARTS }.fetch_add(1, Ordering::Relaxed);
             if got > 0 {
                 // What `peek` showed belongs to the stopped transfer.
@@ -300,8 +317,8 @@ pub async fn run(pins: Mic) -> ! {
             continue;
         }
         last_data = Instant::now();
-        // The first 250 ms: the mic settles after its clock starts.
-        if started.elapsed() < Duration::from_millis(250) {
+        // The mic settles after its clock starts (250 ms; 20 ms after a restart).
+        if Instant::now() < settle_until {
             transfer.consume(got);
             continue;
         }

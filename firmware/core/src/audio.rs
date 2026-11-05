@@ -207,10 +207,16 @@ pub fn coef_hz(hz: u32) -> i64 {
 }
 
 /// One-pole filter coefficient (Q16) for a time constant of `ms`.
-fn coef_ms(ms: u32) -> i64 {
-    let n = (ms * RATE / 1000).max(1);
-    (65536 / i64::from(n)).clamp(1, 65535)
+const fn coef_ms(ms: u32) -> i64 {
+    let n = ms * RATE / 1000;
+    let k = 65536 / (if n == 0 { 1 } else { n }) as i64;
+    if k > 65535 { 65535 } else if k < 1 { 1 } else { k }
 }
+
+/// The fixed time constants: band and onset rise (2 ms), onset fall
+/// (40 ms).
+const K2MS: i64 = coef_ms(2);
+const K40MS: i64 = coef_ms(40);
 
 /// One-pole low-pass: `y += (x - y) * k`, `k` in Q16.
 #[derive(Debug, Clone, Copy, Default)]
@@ -329,6 +335,9 @@ pub struct Analyzer {
     /// The crossovers in use and their coefficients.
     cross_hz: (u16, u16),
     cross_k: (i64, i64),
+    /// Attack and release in use (ms) and their coefficients.
+    env_ms: (u16, u16),
+    env_k: (i64, i64),
     hp150: [OnePole; 2],
     lp2k: [OnePole; 2],
     hp2k: [OnePole; 2],
@@ -367,6 +376,8 @@ impl Analyzer {
             lp150: [OnePole(0); 2],
             cross_hz: (0, 0),
             cross_k: (0, 0),
+            env_ms: (0, 0),
+            env_k: (0, 0),
             hp150: [OnePole(0); 2],
             lp2k: [OnePole(0); 2],
             hp2k: [OnePole(0); 2],
@@ -429,15 +440,19 @@ impl Analyzer {
         let high = g1 - self.hp2k[1].step(g1, kh);
         let band = [low, mid, high];
 
-        let (atk, rel) = (coef_ms(u32::from(p.attack_ms)), coef_ms(u32::from(p.release_ms)));
+        if (p.attack_ms, p.release_ms) != self.env_ms {
+            self.env_ms = (p.attack_ms, p.release_ms);
+            self.env_k = (coef_ms(u32::from(p.attack_ms)), coef_ms(u32::from(p.release_ms)));
+        }
+        let (atk, rel) = self.env_k;
         let level = self.level.step(x, atk, rel);
         // Bands rise at once (2 ms) to show each hit; they fall at the
         // release.
         let mut env = [0i32; 3];
         for k in 0..3 {
-            env[k] = self.bands[k].step(band[k], coef_ms(2), rel);
+            env[k] = self.bands[k].step(band[k], K2MS, rel);
             let o = &mut self.onsets[k];
-            o.fast.step(band[k], coef_ms(2), coef_ms(40));
+            o.fast.step(band[k], K2MS, K40MS);
         }
 
         if now % BLOCK == 0 {
@@ -462,14 +477,17 @@ impl Analyzer {
         let range = i32::from(p.range_db.clamp(12, 48)) * DB;
         let levels = [input, db(env[0]), db(env[1]), db(env[2])];
         let mut gains = [i32::from(p.gain_db) * DB; 4];
+        // A band below the gate on its own is noise too (e.g. the high band
+        // with bass-only music): its AGC holds, it reads 0.
+        let band_gated: [bool; 4] = core::array::from_fn(|k| gated || levels[k] < gate);
         for k in 0..4 {
-            self.agc[k].step(levels[k], gated);
+            self.agc[k].step(levels[k], band_gated[k]);
             if p.agc {
                 gains[k] = self.agc[k].gain(-range * 2 / 5);
             }
         }
         // Values 0..1 (Q16) in the window below 0 dBFS after the gain.
-        let value = |k: usize| -> u32 { if gated { 0 } else { window(levels[k] + gains[k], 0, range) } };
+        let value = |k: usize| -> u32 { if band_gated[k] { 0 } else { window(levels[k] + gains[k], 0, range) } };
         let lvl = value(0);
         let mut bands = [0u8; 3];
         for k in 0..3 {
@@ -550,9 +568,9 @@ impl Analyzer {
                 bands,
                 onsets,
                 activity,
-                input_db: (input / DB).clamp(-120, 0) as i16,
+                input_db: input.div_euclid(DB).clamp(-120, 0) as i16,
                 beat_ms: (self.period * 1000 / RATE) as u16,
-                gain_db: gains.map(|g| (g / DB) as i8),
+                gain_db: gains.map(|g| g.div_euclid(DB) as i8),
                 status,
             }
         };
@@ -731,6 +749,22 @@ mod tests {
         let s = *run(&p, 40, |n| sine(FS / 8, 60, n) + sine(FS / 128, 5000, n)).last().unwrap();
         assert!(s.bands[0] > 100 && s.bands[2] > 100, "{:?} gains {:?}", s.bands, s.gain_db);
         assert!(s.gain_db[3] > s.gain_db[1] + 20, "{:?}", s.gain_db);
+    }
+
+    #[test]
+    fn empty_band_stays_dark() {
+        // Bass only, plus noise far below the gate: the high band holds
+        // instead of its AGC lifting the noise into view (range 48 dB).
+        let p = Params { range_db: 48, ..Params::default() };
+        let mut seed = 1u32;
+        let s = *run(&p, 40, |n| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            sine(FS / 8, 60, n) + ((seed >> 16) as i32 - 32768) * (FS / 10_000) / 32768
+        })
+        .last()
+        .unwrap();
+        assert!(s.bands[0] > 100, "{:?}", s.bands);
+        assert!(s.bands[2] < 10, "{:?} gains {:?}", s.bands, s.gain_db);
     }
 
     #[test]

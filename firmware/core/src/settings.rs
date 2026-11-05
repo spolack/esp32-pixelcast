@@ -507,17 +507,11 @@ impl Settings {
             if form_has(form, "au_univ") && !form_has(form, "au_ctl") {
                 next.audio.control = false;
             }
-            let a = &next.audio;
-            if a.control && next.led_universes().any(|u| u == a.control_universe) {
-                return Err("The audio control universe is one the LED outputs receive: choose another.");
-            }
-            if a.control && a.on && a.control_universe == a.universe {
+            next.audio_collision()?;
+            if next.audio.control && next.audio.on && next.audio.control_universe == next.audio.universe {
                 return Err("The audio control universe must differ from the one the audio is sent on.");
             }
             next.audio.mic.validate()?;
-            if next.audio.on && next.led_universes().any(|u| u == next.audio.universe) {
-                return Err("The audio universe is one the LED outputs receive: choose another.");
-            }
             next.timing.validate()?;
         } else if let Err(e) = next.timing.validate() {
             warn!("settings: stored LED timing invalid ({}); using the default", e);
@@ -661,6 +655,19 @@ impl Settings {
         kv("au_ctl_univ", &control_universe.to_string());
         kv("au_ctl_addr", &control_address.to_string());
         s
+    }
+
+    /// An LED output receives the audio universe or the control universe
+    /// (also checked when an ArtAddress moves the outputs).
+    pub fn audio_collision(&self) -> Result<(), &'static str> {
+        let a = &self.audio;
+        if a.control && self.led_universes().any(|u| u == a.control_universe) {
+            return Err("The audio control universe is one the LED outputs receive: choose another.");
+        }
+        if a.on && self.led_universes().any(|u| u == a.universe) {
+            return Err("The audio universe is one the LED outputs receive: choose another.");
+        }
+        Ok(())
     }
 
     /// The port-addresses the LED outputs receive.
@@ -1070,6 +1077,34 @@ mod tests {
         // Off is allowed on any universe; a full audio form without au_on is off.
         s.apply_form("au_univ=3&au_agc=1", true).unwrap();
         assert!(!s.audio.on);
+    }
+
+    #[test]
+    fn control_universe_is_checked() {
+        let mut s = Settings::default();
+        let base = "au_on=1&au_univ=16&au_dest=2.0.0.1";
+        // An LED universe, the audio universe itself, an address past 502.
+        assert!(s.apply_form(&alloc::format!("{base}&au_ctl=1&au_ctl_univ=5"), true).is_err());
+        assert!(s.apply_form(&alloc::format!("{base}&au_ctl=1&au_ctl_univ=16"), true).is_err());
+        assert!(s.apply_form(&alloc::format!("{base}&au_ctl=1&au_ctl_univ=17&au_ctl_addr=503"), true).is_err());
+        s.apply_form(&alloc::format!("{base}&au_ctl=1&au_ctl_univ=17&au_ctl_addr=502"), true).unwrap();
+        assert!(s.audio.control && s.audio.control_universe == 17 && s.audio.control_address == 502);
+        // Moving an output onto it is caught by the same check.
+        s.outputs[0].universe = 17;
+        assert!(s.audio_collision().is_err());
+    }
+
+    #[test]
+    fn fallback_is_checked() {
+        let mut s = Settings::default();
+        assert!(s.apply_form("fallback_prefix=0", true).is_err());
+        assert!(s.apply_form("fallback_prefix=31", true).is_err());
+        assert!(s.apply_form("fallback_ip=224.0.0.1", true).is_err());
+        assert!(s.apply_form("fallback_ip=10.1.2", true).is_err());
+        s.apply_form("fallback_ip=10.1.2.3&fallback_prefix=24", true).unwrap();
+        assert_eq!((s.fallback_ip, s.fallback_prefix), (Some(core::net::Ipv4Addr::new(10, 1, 2, 3)), 24));
+        s.apply_form("fallback_ip=", true).unwrap();
+        assert_eq!(s.fallback_ip, None);
     }
 
     #[test]
