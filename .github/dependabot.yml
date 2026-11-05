@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # The firmware resolves without build/ (the patched embassy-net-wiznet is
+  # injected by tools/cargo.sh and tools/build.sh), so every crate gets
+  # proposals. A pull request that bumps embassy-net-wiznet builds against
+  # the new release with firmware/patches/embassy-net-wiznet; if it does not
+  # apply, run tools/refresh-patches.sh embassy-net-wiznet and push the
+  # result to the pull request. esp-rom-sys must match between the firmware
+  # and the updater (tools/build.sh check says which pin to change).
+  - package-ecosystem: cargo
+    directories: ["/firmware", "/firmware/core", "/updater"]
+    schedule:
+      interval: weekly
+    groups:
+      esp-rs:
+        patterns: ["esp-*", "embassy-*", "xtensa-*"]
+
+  # The firmwares for the other slot: each dualboot/<name>/upstream pointer
+  # (.gitmodules) follows its upstream branch. CI applies
+  # dualboot/<name>/patches to it; if that fails, run
+  # tools/refresh-patches.sh <name> and push the result to the pull request.
+  - package-ecosystem: gitsubmodule
+    directory: "/"
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

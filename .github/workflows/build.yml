@@ -1,0 +1,168 @@
+name: build
+
+# Every push and pull request builds all images. A tag v* publishes them as a
+# release; a push to main (and the nightly schedule) replaces the "nightly"
+# pre-release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # The nightly schedule in its own group: it does not cancel a push build.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'schedule' && 'schedule' || 'run' }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/core
+      - run: tools/build.sh check
+      - run: tools/test.sh
+
+  bootloader:
+    name: bootloader (ESP-IDF v6.1)
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.1
+    steps:
+      - uses: actions/checkout@v7
+      - run: tools/build.sh bootloader
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bootloader
+          path: dist/bootloader.bin
+
+  firmware:
+    name: updater and firmware
+    runs-on: ubuntu-latest
+    needs: bootloader
+    steps:
+      - uses: actions/checkout@v7
+      - uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32
+          ldproxy: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            firmware
+            updater
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: espflash@4.7.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install esptool
+      - uses: actions/download-artifact@v8
+        with:
+          name: bootloader
+          path: dist
+      # The bootloader from the job above, not rebuilt here.
+      - run: tools/build.sh deps updater firmware
+        env:
+          PXC_BOOTLOADER_BIN: dist/bootloader.bin
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware
+          path: |
+            dist/updater.bin
+            dist/esp32-pixelcast.bin
+            dist/partitions.bin
+
+  # The firmwares for the other slot, one job each (dualboot/<name>/).
+  dualboot:
+    name: ${{ matrix.name }} (upstream + patches)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        name: [wled]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # What dualboot/wled/build.sh needs: PlatformIO, and Node for WLED's
+      # web pages (npm ci, npm run build).
+      - if: matrix.name == 'wled'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+      - if: matrix.name == 'wled'
+        run: pip install platformio
+      # The pinned commit (dualboot/<name>/upstream is a pointer, never
+      # checked out).
+      - id: pin
+        run: echo "commit=$(git ls-files -s dualboot/${{ matrix.name }}/upstream | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.platformio
+            build/dualboot/${{ matrix.name }}/cache
+          key: dualboot-${{ matrix.name }}-${{ steps.pin.outputs.commit }}-${{ hashFiles('tools/build.sh', format('dualboot/{0}/**', matrix.name)) }}
+          restore-keys: dualboot-${{ matrix.name }}-
+      - run: tools/build.sh ${{ matrix.name }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}.bin
+
+  publish:
+    name: image and release
+    runs-on: ubuntu-latest
+    needs: [test, bootloader, firmware, dualboot]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - run: tools/build.sh image
+      - run: (cd dist && sha256sum *.bin > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: images
+          path: dist/*
+
+      - name: release (tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --notes-file .github/release-notes.md
+
+      - name: nightly (main)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Updated in place (move the tag, replace the files), so a failure
+        # halfway leaves the previous nightly instead of none.
+        run: |
+          title="nightly ($(git rev-parse --short HEAD))"
+          git tag -f nightly "$GITHUB_SHA"
+          git push -f origin refs/tags/nightly
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release upload nightly dist/* --clobber
+            gh release edit nightly --prerelease --title "$title" --notes-file .github/release-notes.md
+          else
+            gh release create nightly dist/* --prerelease --verify-tag \
+              --title "$title" --notes-file .github/release-notes.md
+          fi

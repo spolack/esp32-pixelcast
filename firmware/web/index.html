@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Status</title>
+<link rel="icon" href="data:,">
+<style><!--COMMON_CSS--></style>
+<script>try{var t=localStorage.getItem('an-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+.kv{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:9px 14px;align-items:baseline}
+.kv dt{color:var(--mu);font-size:13px}
+.kv dd{margin:0;text-align:right;font-weight:500;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.kv dd:empty::before{content:"—";color:var(--mu)}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.stat{min-width:0;padding:10px 12px;background:var(--card2);border-radius:10px}
+.stat small{display:block;color:var(--mu);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.stat b{display:block;font-size:24px;line-height:1.3;font-weight:600;font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat.warn b{color:var(--warn)}
+.kv dd.warn{color:var(--warn)}
+@media (min-width:520px){.stats{grid-template-columns:repeat(4,minmax(0,1fr))}}
+.slots{display:grid;gap:10px;grid-template-columns:minmax(0,1fr)}
+@media (min-width:520px){.slots{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.slot{min-width:0;padding:12px 14px;background:var(--card2);border:1px solid transparent;border-radius:10px}
+.slot.run{border-color:var(--ok)}
+.slot-h{display:flex;align-items:center;gap:6px;min-height:22px;margin-bottom:8px}
+.slot-h small{margin-right:auto;color:var(--mu);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+.slot b{display:block;font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot b.none{color:var(--mu);font-weight:500}
+.slot .ver{display:block;margin-top:2px;font-size:13px;overflow-wrap:anywhere}
+.slot .bt{display:block;margin-top:4px;color:var(--mu);font-size:12px}
+.prev{display:grid;gap:8px}
+.prev .row{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;align-items:center;font-size:13px;color:var(--mu)}
+.prev canvas{width:100%;height:18px;border-radius:4px;background:#000;image-rendering:pixelated}
+</style>
+</head>
+<body data-page="status">
+<header id="top"></header>
+<main class="wrap">
+  <div id="b-pw" class="banner" hidden>
+    <i class="ic" data-i="warn"></i>
+    <div>The default password is still set. <a href="/config">Change it in Settings</a></div>
+  </div>
+  <div id="b-trial" class="banner" hidden>
+    <i class="ic" data-i="warn"></i>
+    <div>New firmware is running on trial. Check that everything works, then keep it; otherwise roll back.
+      Without a decision it rolls back by itself <span id="t-left"></span>.
+      <div class="acts" style="margin-top:8px">
+        <button id="t-ok" class="btn pri" type="button">Keep this firmware</button>
+        <button id="t-back" class="btn" type="button">Roll back now</button>
+      </div>
+      <div id="t-msg" class="sub" role="status"></div>
+    </div>
+  </div>
+
+  <div class="head"><h1>Status</h1><span class="sub">Refreshes every 2 s</span></div>
+
+  <div class="grid">
+    <section class="card">
+      <h2><i class="ic" data-i="cpu"></i>Device <span id="p-state" class="pill">Loading</span></h2>
+      <dl class="kv">
+        <dt>Firmware</dt><dd data-v="fw"></dd>
+        <dt>Uptime</dt><dd id="up">—</dd>
+        <dt>Free heap</dt><dd data-v="heap"></dd>
+        <dt>Last restart</dt><dd id="d-lr" data-v="lr"></dd>
+        <dt>Crashes since power-on</dt><dd id="d-lrn" data-v="lrn"></dd>
+      </dl>
+      <p id="lr-msg" class="sub mono" style="margin-top:10px;overflow-wrap:anywhere" hidden></p>
+    </section>
+
+    <section class="card">
+      <h2><i class="ic" data-i="wifi"></i>Network</h2>
+      <h3>Ethernet <span id="p-eth" class="pill">—</span></h3>
+      <dl class="kv">
+        <dt>Address</dt><dd class="mono" data-v="eaddr"></dd>
+        <dt>Source</dt><dd data-v="esrc"></dd>
+      </dl>
+      <hr>
+      <h3>Setup Wi-Fi <span id="p-wifi" class="pill">—</span></h3>
+      <dl class="kv">
+        <dt>SSID</dt><dd data-v="ssid"></dd>
+        <dt>Reason</dt><dd data-v="reason"></dd>
+        <dt>Address</dt><dd class="mono" data-v="waddr"></dd>
+      </dl>
+    </section>
+
+    <section id="c-slots" class="card span" hidden>
+      <h2><i class="ic" data-i="upload"></i>Firmware slots</h2>
+      <div id="slots" class="slots"></div>
+      <p class="sub" style="margin-top:12px">Install or start firmware in <a href="/config">Settings</a>. BOOT within 2 s after power-on or EN starts the other slot.</p>
+    </section>
+
+    <section class="card span">
+      <h2><i class="ic" data-i="zap"></i>Art-Net <span id="p-art" class="pill">—</span></h2>
+      <div class="stats">
+        <div class="stat"><small>Packets/s</small><b data-v="pps">—</b></div>
+        <div class="stat"><small>ArtDmx/s</small><b data-v="dmx">—</b></div>
+        <div class="stat"><small>Universes</small><b data-v="uni">—</b></div>
+        <div class="stat"><small>Frames/s per universe</small><b data-v="fps">—</b></div>
+        <div id="s-gaps" class="stat"><small>Sequence gaps</small><b data-v="gaps">—</b></div>
+        <div class="stat"><small>ArtSync/s</small><b data-v="sync">—</b></div>
+        <div class="stat"><small>ArtPoll/s</small><b data-v="poll">—</b></div>
+        <div id="s-inv" class="stat"><small>Invalid</small><b data-v="inv">—</b></div>
+      </div>
+      <p class="sub" style="margin-top:12px"><span id="win">Per second</span> · <a href="/artnet">Open live view</a></p>
+    </section>
+
+    <section id="c-led" class="card span" hidden>
+      <h2><i class="ic" data-i="fader"></i>LED output <span id="p-led" class="pill">—</span></h2>
+      <div class="stats">
+        <div class="stat"><small>Frames/s sent</small><b data-v="lfps">—</b></div>
+        <div id="s-under" class="stat"><small>Underruns</small><b data-v="lunder">—</b></div>
+        <div class="stat"><small>Longest frame</small><b data-v="lframe">—</b></div>
+        <div class="stat"><small>Samples/bit</small><b data-v="lspb">—</b></div>
+      </div>
+      <dl class="kv" style="margin-top:14px">
+        <dt>Timing in use</dt><dd data-v="ltim"></dd>
+        <dt>I2S sample rate</dt><dd data-v="lrate"></dd>
+        <dt>Start-up self-test</dt><dd id="d-self" data-v="lself"></dd>
+      </dl>
+      <dl class="kv" style="margin-top:4px"><dt>Estimated current</dt><dd data-v="lpow"></dd>
+        <dt>LED memory</dt><dd id="d-mem" data-v="lmem"></dd></dl>
+      <p class="sub" style="margin-top:12px">Underruns are frames cut short since start; a few during a settings save or firmware update are normal. The self-test compares the measured I2S rate with the expected one (a few % low is normal). <a href="/config">LED settings</a></p>
+    </section>
+    <section id="c-prev" class="card span" hidden>
+      <h2><i class="ic" data-i="fader"></i>Live preview</h2>
+      <div id="prev" class="prev"></div>
+      <p class="sub" style="margin-top:10px">What each output shows, as received (before brightness and the power limit); long strips are sampled to 128 points. Refreshed twice a second while this page is open.</p>
+    </section>
+  </div>
+</main>
+<script><!--COMMON_JS--></script>
+<script>
+'use strict';
+const {$, getJSON, poll, setName, fmtUptime, fmtBytes, netName} = AN;
+AN.init();
+
+let base = null; // uptime baseline: {s, t}
+const dash = v => (v == null || v === '' ? '—' : v);
+const show = (id, on) => { $(id).hidden = !on; };
+const pill = (id, kind, text) => { const e = $(id); e.className = 'pill ' + kind; e.textContent = text; };
+const tone = (id, kind) => { $(id).className = 'stat' + (kind ? ' ' + kind : ''); };
+
+const mhz = r => (r / 1e6).toFixed(3) + ' MHz';
+
+// LED output card (hidden if the firmware sends no "led" object). Returns the data-v values.
+// Estimated power: total watts, then watts and amps per output (amps at the
+// strip voltage from the settings).
+function powerText(mw, dv) {
+  const v = (dv || 50) / 10;
+  const tot = mw.reduce((x, y) => x + y, 0) / 1000;
+  return tot.toFixed(1) + ' W (' + mw.map(m => (m / 1000).toFixed(1) + ' W ' + (m / 1000 / v).toFixed(1) + ' A').join(' / ') + ')';
+}
+function renderLed(l) {
+  show('c-led', !!l);
+  if (!l) return {};
+  // The start-up self-test: measured I2S rate as a share of the expected one; under 90 % is a warning.
+  const pct = l.sample_rate > 0 && l.measured_rate > 0 ? l.measured_rate / l.sample_rate * 100 : null;
+  const low = pct != null && pct < 90;
+  $('d-self').className = low ? 'warn' : '';
+  tone('s-under', l.underruns > 0 ? 'warn' : '');
+  $('d-mem').className = l.memory && l.memory.wifi_capped ? 'warn' : '';
+  if (l.underruns > 0) pill('p-led', 'warn', 'Underruns');
+  else if (low) pill('p-led', 'warn', 'Self-test low');
+  else if (l.fps > 0) pill('p-led', 'ok', 'Sending');
+  else pill('p-led', 'off', 'Idle');
+  return {
+    lfps: l.fps, lunder: l.underruns, lframe: l.frame_us ? (l.frame_us / 1000).toFixed(1) + ' ms' : null, lspb: l.samples_per_bit,
+    ltim: (1e6 / l.period).toFixed(1) + ' kHz · T0H ' + l.t0h + ' ns · T1H ' + l.t1h + ' ns',
+    lrate: l.sample_rate ? mhz(l.sample_rate) : null,
+    lself: pct == null ? null : pct.toFixed(1) + ' % (' + mhz(l.measured_rate) + ' measured)' + (low ? ' · low' : ''),
+    lmem: l.memory ? Math.round(l.memory.used / l.memory.bytes * 100) + ' % · ' + l.memory.effective_leds.join(' / ') + ' LEDs driven' +
+      (l.memory.wifi_capped ? ' · capped while the setup Wi-Fi runs' : '') : null,
+    lpow: l.power_mw ? powerText(l.power_mw, l.volts_dv) + (l.power_limited ? ' · limited' : '') : null
+  };
+}
+
+// Why the board last restarted (crash log kept across restarts, not across power cycles).
+function renderRestart(r) {
+  if (!r) return {};
+  const after = ' after ' + fmtUptime(r.uptime_s);
+  const t = {power_on: 'Power on', planned: 'Planned', panic: 'Crash (panic)' + after, watchdog: 'Watchdog' + after,
+    brownout: 'Power dip (brownout)' + after, other: 'Unexpected reset (code ' + r.hw_reason + ')' + after}[r.kind] || r.kind;
+  const bad = r.kind !== 'power_on' && r.kind !== 'planned';
+  $('d-lr').className = bad ? 'warn' : '';
+  $('d-lrn').className = r.unexpected_since_power_on > 0 ? 'warn' : '';
+  const m = (r.message || '') + (r.backtrace && r.backtrace.length ? ' · backtrace ' + r.backtrace.join(' ') : '');
+  $('lr-msg').textContent = m;
+  show('lr-msg', !!m);
+  return {lr: t, lrn: r.unexpected_since_power_on};
+}
+
+async function trialAct(path, ask) {
+  if (ask && !confirm(ask)) return;
+  $('t-msg').textContent = 'Please wait…';
+  try {
+    const r = await AN.postForm(path, {});
+    $('t-msg').textContent = r.status === 401 ? 'Login needed: open Settings once, then try again.' : (r.text || ('Error ' + r.status));
+  } catch (e) { $('t-msg').textContent = 'No reply from the board.'; }
+}
+$('t-ok').onclick = () => trialAct('/confirm');
+$('t-back').onclick = () => trialAct('/rollback', 'Go back to the previous firmware now?');
+
+function tickUp() { if (base) $('up').textContent = fmtUptime(base.s + (Date.now() - base.t) / 1000); }
+
+function render(s) {
+  setName(s.name);
+  const f = s.firmware, e = s.ethernet, w = s.wifi, a = s.artnet;
+  base = {s: s.uptime_s, t: Date.now()};
+  tickUp();
+  show('b-pw', s.default_password);
+  show('b-trial', f.state === 'trial');
+  if (f.state === 'trial') $('t-left').textContent = 'in ' + Math.ceil((f.trial_left_s || 0) / 60) + ' min';
+  pill('p-state', f.state === 'trial' ? 'warn' : 'ok', f.state === 'trial' ? 'Trial' : 'Confirmed');
+  pill('p-eth', !e.present ? 'off' : e.link ? 'ok' : 'warn', !e.present ? 'No module' : e.link ? 'Link up' : 'No link');
+  pill('p-wifi', w.on ? 'ok' : 'off', w.on ? 'On' : 'Off');
+  const recv = a.pps > 0;
+  pill('p-art', recv ? 'ok' : 'off', recv ? 'Receiving · ' + netName(a.network) : 'No data');
+  const v = {
+    fw: f.name + ' ' + f.version, heap: fmtBytes(s.heap_free),
+    eaddr: e.present ? e.address : null, esrc: e.present ? e.source : null,
+    ssid: w.ssid, reason: w.reason, waddr: w.on ? w.address : null,
+    pps: a.pps, dmx: a.dmx, uni: a.universes, gaps: a.seq_gaps, sync: a.sync, poll: a.poll, inv: a.invalid,
+    fps: !a.universes ? null : a.fps_min === a.fps_max ? a.fps_max : a.fps_min + '–' + a.fps_max
+  };
+  Object.assign(v, renderLed(s.led));
+  Object.assign(v, renderRestart(s.last_restart));
+  document.querySelectorAll('[data-v]').forEach(n => { n.textContent = dash(v[n.dataset.v]); });
+  renderSlots(f.slots || []);
+  tone('s-gaps', a.seq_gaps > 0 ? 'warn' : '');
+  tone('s-inv', a.invalid > 0 ? 'warn' : '');
+  $('win').textContent = 'Per second, measured over the last ' + (a.window_ms / 1000) + ' s';
+}
+
+/* Firmware slots: what each holds, which runs, which the next start boots. */
+let slotsKey = '';
+function renderSlots(sl) {
+  const key = JSON.stringify(sl);
+  if (key === slotsKey) return;
+  slotsKey = key;
+  const box = $('slots');
+  box.textContent = '';
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+  for (const x of sl) {
+    const d = el('div', 'slot' + (x.running ? ' run' : ''));
+    const h = el('div', 'slot-h');
+    h.appendChild(el('small', '', x.slot));
+    if (x.running) h.appendChild(el('span', 'pill ok', 'Running'));
+    if (x.next) h.appendChild(el('span', 'pill' + (x.running ? '' : ' warn'), 'Next start'));
+    d.appendChild(h);
+    const known = x.kind === 'this' || x.kind === 'other';
+    d.appendChild(el('b', known && x.firmware ? '' : 'none',
+      x.firmware || (x.kind === 'empty' ? 'Empty' : x.kind === 'changed' ? 'Being rewritten' : 'Unknown firmware')));
+    if (x.version) d.appendChild(el('span', 'ver mono', x.version));
+    if (x.built) d.appendChild(el('span', 'bt', 'Built ' + x.built));
+    else if (x.kind === 'other') d.appendChild(el('span', 'bt', 'Other firmware'));
+    box.appendChild(d);
+  }
+  show('c-slots', sl.length > 0);
+}
+
+/* Live preview: one strip per output that has LEDs. */
+async function preview() {
+  const d = await getJSON('/api/leds');
+  const outs = d.outputs || [];
+  show('c-prev', outs.some(h => h.length));
+  const box = $('prev');
+  if (box.children.length !== outs.length) {
+    box.innerHTML = outs.map((h, i) => '<div class="row"><span>Output ' + (i + 1) + '</span><canvas id="pv' + i + '" height="1"></canvas></div>').join('');
+  }
+  outs.forEach((h, i) => {
+    const c = $('pv' + i), n = h.length / 6;
+    c.parentNode.hidden = !n;
+    if (!n) return;
+    if (c.width !== n) c.width = n;
+    const g = c.getContext('2d'), img = g.createImageData(n, 1);
+    for (let p = 0; p < n; p++) {
+      for (let k = 0; k < 3; k++) img.data[p * 4 + k] = parseInt(h.substr(p * 6 + k * 2, 2), 16);
+      img.data[p * 4 + 3] = 255;
+    }
+    g.putImageData(img, 0, 0);
+  });
+}
+poll(preview, 500);
+setInterval(tickUp, 1000);
+poll(async () => render(await getJSON('/api/status')), 2000);
+</script>
+</body>
+</html>

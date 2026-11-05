@@ -1,0 +1,9 @@
+# Pins of the firmwares for the other slot (dualboot/<name>/upstream): only
+# a pointer to the commit the patch series applies to, so Dependabot can
+# propose newer ones. Not checked out (update = none): tools/build.sh clones
+# by itself.
+[submodule "dualboot/wled"]
+	path = dualboot/wled/upstream
+	url = https://github.com/wled/WLED.git
+	branch = main
+	update = none

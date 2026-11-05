@@ -1,0 +1,19 @@
+# Build output
+/build/
+/dist/
+target/
+
+# ESP-IDF, when run by hand in bootloader/
+/bootloader/build/
+/bootloader/sdkconfig
+/bootloader/sdkconfig.old
+/bootloader/dependencies.lock
+
+# Editors and OS
+.vscode/
+.zed/
+.helix/
+.idea/
+.nvim.lua
+**/*.rs.bk
+**/.DS_Store

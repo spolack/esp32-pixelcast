@@ -1,0 +1,15 @@
+[package]
+name = "pixelcast-core"
+edition = "2024"
+version = "0.1.0"
+license = "GPL-3.0-or-later"
+description = "Hardware-free parts of the esp32-pixelcast firmware (protocols, LED mapping and encoding, merging, mDNS, HTTP parsing, OLED drawing); tested on the host with tools/test.sh."
+
+[dependencies]
+embedded-graphics = "0.8"
+heapless = { version = "0.9", default-features = false }
+log = "0.4"
+
+# Only for placing hot functions in RAM (`#[esp_hal::ram]`) on the chip.
+[target.'cfg(target_arch = "xtensa")'.dependencies]
+esp-hal = { version = "~1.2.2", features = ["esp32", "unstable"] }

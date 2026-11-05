@@ -1,0 +1,12 @@
+CONFIG_IDF_TARGET="esp32"
+# A slot that restarts before its firmware marked it valid is skipped.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+# Same bytes from the same sources (no build dates or paths): CI and local
+# builds match.
+CONFIG_APP_REPRODUCIBLE_BUILD=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../partitions.csv"

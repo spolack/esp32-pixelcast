@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Thu, 5 Nov 2026 00:25:30 +0100
+Subject: [PATCH 5/6] esp32-pixelcast: first configuration from its setup
+
+Without a /cfg.json or a backup of one (first start, or after a factory
+reset) WLED starts from esp32-pixelcast's setup, which it leaves in its
+storage partition when it starts WLED: its static address (if it has
+one), its LED outputs (pins, lengths, types, colour orders, direction,
+dark LEDs, mA per LED) and power limit, and the four-line display on.
+Everything else, live input included, stays at WLED's defaults; from
+then on WLED's own configuration rules.
+---
+ wled00/pixelcast.cpp | 81 ++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 81 insertions(+)
+
+diff --git a/wled00/pixelcast.cpp b/wled00/pixelcast.cpp
+index 50fa4968..aa96922d 100644
+--- a/wled00/pixelcast.cpp
++++ b/wled00/pixelcast.cpp
+@@ -9,6 +9,11 @@
+  *   snapshots go to sector 3 of esp32-pixelcast's "storage" partition at 15,
+  *   45, 120 and 280 s and before switching back; esp32-pixelcast shows them
+  *   (GET /api/dualboot-log).
++ * - First configuration: without a /cfg.json (first start, or after a factory
++ *   reset) WLED starts from esp32-pixelcast's setup: its static address
++ *   (if it has one), its LED outputs and power limit, and the display on.
++ *   Everything else, live input (Art-Net, sACN) included, stays at WLED's
++ *   defaults. From then on WLED's own configuration rules.
+  */
+ #include "wled.h"
+ 
+@@ -117,8 +122,84 @@ static void pxcdLoop() {
+   }
+ }
+ 
++// ---- First configuration from esp32-pixelcast (records in sector 2 of
++// "storage", written each time it starts WLED; little endian, CRC-32 IEEE):
++// 0x2000 "PXCW" address: 4 version 1, 5 mode (1 = static), 6 prefix length,
++//   8 IPv4 address, 12 gateway (0.0.0.0: none), CRC of 0..20 at 20.
++// 0x2100 "PXCL" LEDs (esp32-pixelcast firmware/core/src/dualboot/wled.rs): 4 version 1,
++//   5 buses, 8 mA per LED, 10 current limit (mA), 20 + 10*i bus i: start,
++//   length, pin, LED type, colour order, reversed, skipped LEDs; CRC of 0..60
++//   at 60.
++static uint32_t pxcwCrc(const uint8_t* d, size_t n) {
++  uint32_t crc = 0xFFFFFFFF;
++  for (size_t i = 0; i < n; i++) {
++    crc ^= d[i];
++    for (int k = 0; k < 8; k++) crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
++  }
++  return ~crc;
++}
++
++static bool pxcwRecord(uint32_t at, const char* magic, uint8_t* r, size_t len) {
++  const esp_partition_t* part = pxcwStorage();
++  if (!part || part->size < at + len || esp_partition_read(part, at, r, len) != ESP_OK) return false;
++  uint32_t crc;
++  memcpy(&crc, r + len - 4, 4);
++  return memcmp(r, magic, 4) == 0 && r[4] == 1 && pxcwCrc(r, len - 4) == crc;
++}
++
++static void pxcwAddIp(String& j, const char* key, const uint8_t* a) {
++  j += '"'; j += key; j += F("\":[");
++  for (int i = 0; i < 4; i++) { if (i) j += ','; j += a[i]; }
++  j += ']';
++}
++
+ void pxcwPreConfig() {
+   pxcdStart();
++  if (WLED_FS.exists("/cfg.json") || configBackupExists()) return;
++  uint8_t nw[24], led[64];
++  bool haveNw = pxcwRecord(0x2000, "PXCW", nw, sizeof(nw)) && nw[5] == 1 && nw[6] >= 1 && nw[6] <= 30;
++  bool haveLed = pxcwRecord(0x2100, "PXCL", led, sizeof(led)) && led[5] <= 4;
++  auto u16 = [&](int o) { return (unsigned)(led[o] | (led[o + 1] << 8)); };
++
++  // The display is on this board: on from the start.
++  String j = F("{\"um\":{\"4LineDisplay\":{\"enabled\":true}}");
++  if (haveNw) {
++    // WLED applies a static address only with a gateway: without one, the
++    // address itself stands in (on-link traffic only, as on an Art-Net net).
++    uint32_t mask = 0xFFFFFFFFUL << (32 - nw[6]);
++    uint8_t sn[4] = {(uint8_t)(mask >> 24), (uint8_t)(mask >> 16), (uint8_t)(mask >> 8), (uint8_t)mask};
++    const uint8_t* gw = (nw[12] | nw[13] | nw[14] | nw[15]) ? nw + 12 : nw + 8;
++    j += F(",\"nw\":{\"ins\":[{");
++    pxcwAddIp(j, "ip", nw + 8); j += ',';
++    pxcwAddIp(j, "gw", gw); j += ',';
++    pxcwAddIp(j, "sn", sn);
++    j += F("}]}");
++  }
++  if (haveLed) {
++    j += F(",\"hw\":{\"led\":{\"maxpwr\":"); j += u16(10);
++    j += F(",\"ins\":[");
++    for (int i = 0; i < led[5]; i++) {
++      int o = 20 + i * 10;
++      if (i) j += ',';
++      j += F("{\"start\":"); j += u16(o);
++      j += F(",\"len\":"); j += u16(o + 2);
++      j += F(",\"pin\":["); j += led[o + 4]; j += ']';
++      j += F(",\"type\":"); j += led[o + 5];
++      j += F(",\"order\":"); j += led[o + 6];
++      j += F(",\"rev\":"); j += led[o + 7] ? F("true") : F("false");
++      j += F(",\"skip\":"); j += led[o + 8];
++      j += F(",\"ledma\":"); j += led[8];
++      j += '}';
++    }
++    j += F("]}}");
++  }
++  j += '}';
++  File f = WLED_FS.open("/cfg.json", "w");
++  if (!f) return;
++  f.print(j);
++  f.close();
++  pxcdf("first configuration from esp32-pixelcast: %u bytes", (unsigned)j.length());
++  DEBUG_PRINTF_P(PSTR("pixelcast: first configuration: %s\n"), j.c_str());
+ }
+ 
+ // Boots esp32-pixelcast: the other app slot (the one WLED's own update page

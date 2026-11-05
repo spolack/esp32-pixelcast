@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Thu, 5 Nov 2026 00:25:20 +0100
+Subject: [PATCH 4/6] esp32-pixelcast: diagnostics log in storage sector 3
+
+For when WLED is not reachable and its serial port cannot be watched:
+the ESP-IDF log (Ethernet driver), network events and status snapshots
+go to sector 3 of esp32-pixelcast's storage partition at 15, 45, 120
+and 280 s and before switching back. esp32-pixelcast shows the log
+(GET /api/dualboot-log).
+---
+ wled00/fcn_declare.h |   1 +
+ wled00/pixelcast.cpp | 104 +++++++++++++++++++++++++++++++++++++++++++
+ wled00/wled.cpp      |   1 +
+ 3 files changed, 106 insertions(+)
+
+diff --git a/wled00/fcn_declare.h b/wled00/fcn_declare.h
+index a09c00d7..8eff4aa7 100644
+--- a/wled00/fcn_declare.h
++++ b/wled00/fcn_declare.h
+@@ -625,6 +625,7 @@ void XML_response(Print& dest);
+ void getSettingsJS(byte subPage, Print& dest);
+ 
+ //pixelcast.cpp (esp32-pixelcast in the other app slot)
++void pxcwPreConfig();
+ void pxcwLoop();
+ void pxcwRequestBack();
+ 
+diff --git a/wled00/pixelcast.cpp b/wled00/pixelcast.cpp
+index 7084084f..50fa4968 100644
+--- a/wled00/pixelcast.cpp
++++ b/wled00/pixelcast.cpp
+@@ -5,6 +5,10 @@
+  * - Way back: POST /pixelcast (WLED's settings PIN applies), or click BOOT
+  *   (GPIO0) three times within 2 s: the other slot becomes the boot slot and
+  *   WLED restarts into it.
++ * - Diagnostics: the ESP-IDF log (Ethernet driver), network events and status
++ *   snapshots go to sector 3 of esp32-pixelcast's "storage" partition at 15,
++ *   45, 120 and 280 s and before switching back; esp32-pixelcast shows them
++ *   (GET /api/dualboot-log).
+  */
+ #include "wled.h"
+ 
+@@ -22,11 +26,109 @@ static const esp_partition_t* pxcwStorage() {
+   return part;
+ }
+ 
++// ---- Diagnostics: a text log in sector 3 of "storage".
++#include <stdarg.h>
++#include "esp_log.h"
++static const uint32_t PXCD_OFFSET = 0x3000;
++static char pxcdBuf[3600];
++static volatile size_t pxcdLen = 0;
++static portMUX_TYPE pxcdMux = portMUX_INITIALIZER_UNLOCKED;
++static vprintf_like_t pxcdPrev = nullptr;
++static uint8_t pxcdWrites = 0;
++
++static void pxcdAdd(const char* t, size_t n) {
++  portENTER_CRITICAL(&pxcdMux);
++  size_t room = sizeof(pxcdBuf) - pxcdLen;
++  if (n > room) n = room;
++  memcpy(pxcdBuf + pxcdLen, t, n);
++  pxcdLen += n;
++  portEXIT_CRITICAL(&pxcdMux);
++}
++
++static void pxcdf(const char* fmt, ...) {
++  char t[200];
++  int n = snprintf(t, sizeof(t), "%lu ", (unsigned long)millis());
++  va_list ap; va_start(ap, fmt);
++  int m = vsnprintf(t + n, sizeof(t) - n, fmt, ap);
++  va_end(ap);
++  if (m < 0) return;
++  size_t len = strnlen(t, sizeof(t) - 1);
++  if (len < sizeof(t) - 1) t[len++] = '\n';
++  pxcdAdd(t, len);
++}
++
++static int pxcdVprintf(const char* fmt, va_list ap) {
++  char t[200];
++  va_list cp; va_copy(cp, ap);
++  int n = vsnprintf(t, sizeof(t), fmt, cp);
++  va_end(cp);
++  if (n > 0) pxcdAdd(t, strnlen(t, sizeof(t) - 1));
++  return pxcdPrev ? pxcdPrev(fmt, ap) : n;
++}
++
++static void pxcdEvent(WiFiEvent_t e) {
++  pxcdf("event %d", (int)e);
++}
++
++static void pxcdSnapshot(const char* why) {
++#ifdef WLED_USE_ETHERNET
++  pxcdf("snap %s: eth link=%d speed=%d full=%d ip=%s mask=%s gw=%s mac=%s", why,
++        (int)ETH.linkUp(), (int)ETH.linkSpeed(), (int)ETH.fullDuplex(), ETH.localIP().toString().c_str(),
++        ETH.subnetMask().toString().c_str(), ETH.gatewayIP().toString().c_str(), ETH.macAddress().c_str());
++  pxcdf("snap %s: isEthernet=%d netIP=%s ethType=%d", why, (int)WLEDNetwork.isEthernet(),
++        WLEDNetwork.localIP().toString().c_str(), (int)ethernetType);
++#endif
++  IPAddress ip, gw, sn;
++  if (multiWiFi.size()) { ip = multiWiFi[0].staticIP; gw = multiWiFi[0].staticGW; sn = multiWiFi[0].staticSN; }
++  pxcdf("snap %s: static=%s/%s gw=%s ap=%d wifi=%d heap=%u", why, ip.toString().c_str(),
++        sn.toString().c_str(), gw.toString().c_str(), (int)apActive, (int)WiFi.status(),
++        (unsigned)ESP.getFreeHeap());
++}
++
++static void pxcdStore() {
++  const esp_partition_t* part = pxcwStorage();
++  if (!part || part->size < PXCD_OFFSET + 4096) return;
++  uint8_t head[8] = {'P', 'X', 'C', 'D', 0, 0, 0, 0};
++  uint32_t n = pxcdLen;
++  memcpy(head + 4, &n, 4);
++  if (esp_partition_erase_range(part, PXCD_OFFSET, 4096) != ESP_OK) return;
++  esp_partition_write(part, PXCD_OFFSET, head, 8);
++  esp_partition_write(part, PXCD_OFFSET + 8, pxcdBuf, (n + 3) & ~3u);
++}
++
++static void pxcdStart() {
++  static bool started = false;
++  if (started) return;
++  started = true;
++  pxcdf("diag start, reset reason %d", (int)esp_reset_reason());
++  esp_log_level_set("*", ESP_LOG_INFO);
++  pxcdPrev = esp_log_set_vprintf(pxcdVprintf);
++  WiFi.onEvent(pxcdEvent);
++}
++
++static void pxcdLoop() {
++  static const uint32_t at[] = {15000, 45000, 120000, 280000};
++  if (pxcdWrites < 4 && millis() >= at[pxcdWrites]) {
++    char why[16];
++    snprintf(why, sizeof(why), "t%u", (unsigned)(at[pxcdWrites] / 1000));
++    pxcdSnapshot(why);
++    pxcdStore();
++    pxcdWrites++;
++  }
++}
++
++void pxcwPreConfig() {
++  pxcdStart();
++}
++
+ // Boots esp32-pixelcast: the other app slot (the one WLED's own update page
+ // would write next).
+ static void pxcwBack(const char* why) {
+   const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
+   DEBUG_PRINTF_P(PSTR("pixelcast: switching back (%s)\n"), why);
++  pxcdf("switching back (%s)", why);
++  pxcdSnapshot("back");
++  pxcdStore();
+   if (other && esp_ota_set_boot_partition(other) == ESP_OK) {
+     delay(100);
+     ESP.restart();
+@@ -41,6 +143,7 @@ void pxcwRequestBack() {
+ }
+ 
+ void pxcwLoop() {
++  pxcdLoop();
+ 
+   if (pxcwBackRequested && (long)(millis() - pxcwBackAt) >= 0) pxcwBack("requested");
+ 
+@@ -60,6 +163,7 @@ void pxcwLoop() {
+   }
+ }
+ #else
++void pxcwPreConfig() {}
+ void pxcwRequestBack() {}
+ void pxcwLoop() {}
+ #endif
+diff --git a/wled00/wled.cpp b/wled00/wled.cpp
+index e01e54ac..7e3651f6 100644
+--- a/wled00/wled.cpp
++++ b/wled00/wled.cpp
+@@ -521,6 +521,7 @@ void WLED::setup()
+   WLED_SET_AP_SSID(); // otherwise it is empty on first boot until config is saved
+   multiWiFi.push_back(WiFiConfig(CLIENT_SSID,CLIENT_PASS)); // initialise vector with default WiFi
+ 
++  pxcwPreConfig();  // esp32-pixelcast: diagnostics; first configuration
+   if(!verifyConfig()) {
+     if(!restoreConfig()) {
+       resetConfig();

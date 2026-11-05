@@ -1,0 +1,1269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Settings</title>
+<link rel="icon" href="data:,">
+<style><!--COMMON_CSS--></style>
+<script>try{var t=localStorage.getItem('an-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+.fld{margin-bottom:14px}
+.fl{display:block;margin-bottom:5px;font-size:13px;font-weight:500}
+.hint{margin-top:5px;font-size:12px;color:var(--mu)}
+.row2,.rowip{display:grid;gap:0 14px;grid-template-columns:minmax(0,1fr)}
+.rowip{grid-template-columns:minmax(0,1fr) 120px}
+@media (min-width:520px){.row2{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.seg{display:inline-flex;margin-bottom:14px;padding:3px;background:var(--bg);border:1px solid var(--line);border-radius:10px}
+.seg label{padding:7px 20px;border-radius:7px;color:var(--mu);font-size:14px;font-weight:600;cursor:pointer;
+  transition:background-color .15s,color .15s}
+.seg input:checked+label{background:var(--ac);color:var(--ac-tx)}
+.chk{display:flex;gap:10px;cursor:pointer;font-size:14px}
+.chk input{flex:none;width:18px;height:18px;margin:1px 0 0}
+.msg,.note{padding:10px 12px;border-radius:10px;font-size:14px;overflow-wrap:anywhere}
+.msg{margin-top:12px}
+.msg.ok{color:var(--ok);background:var(--ok-bg)}
+.msg.err{color:var(--err);background:var(--err-bg)}
+.msg.info{color:var(--ac);background:var(--ac-bg)}
+.note{margin-bottom:12px;font-size:13px;color:var(--mu);background:var(--card2)}
+.note.warn{color:var(--tx);background:var(--warn-bg)}
+.note.err{color:var(--tx);background:var(--err-bg)}
+.note.ok{color:var(--tx);background:var(--ok-bg)}
+/* LED output */
+.pnum{display:flex;align-items:center;gap:4px;white-space:nowrap}.pnum .in{width:88px;padding:6px 8px}
+.prow{display:flex;gap:8px;flex-wrap:wrap}.prow .in{flex:1;min-width:160px}
+.wave{display:block;width:100%;height:150px;margin:2px 0 4px}
+.wave .wg{stroke:var(--line);stroke-dasharray:3 4}
+.wave .wb{fill:var(--ok-bg)}
+.wave .wl{fill:none;stroke:var(--ac);stroke-width:2.5;stroke-linejoin:round}
+.wave .wl.warn{stroke:var(--warn)}
+.wave .wl.err{stroke:var(--err)}
+.wave text{fill:var(--mu);font-size:12px;font-variant-numeric:tabular-nums}
+.wave .wn{fill:var(--tx);font-weight:600}
+.adv{margin:14px 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
+.adv summary{cursor:pointer;font-size:14px;font-weight:600}
+.adv[open] summary{margin-bottom:12px}
+.adv .chk{margin-bottom:14px}
+.rng input:disabled{opacity:.45}
+.oo{display:grid;grid-template-columns:auto repeat(6,minmax(0,1fr));gap:6px 8px;align-items:center;font-size:13px}
+.oo .oh{font-size:12px;color:var(--mu)}
+.oo .in{padding:6px 8px}
+.oo input[type=checkbox]{width:18px;height:18px;justify-self:center}
+select.in{padding-right:8px}
+.rng{display:flex;align-items:center;gap:12px}
+.rng input{flex:1;min-width:0;height:40px;margin:0;accent-color:var(--ac)}
+.rng output{min-width:52px;text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.og{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:4px 10px;align-items:center;margin-bottom:12px}
+.og b{font-size:13px}
+.og .oh{font-size:12px;color:var(--mu)}
+.og .rg{grid-column:2/-1;min-height:18px;margin-bottom:8px;font-size:12px;color:var(--mu);font-variant-numeric:tabular-nums}
+.og .rg.w{color:var(--warn)}
+.cs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:8px}
+.cs div{min-width:0;padding:8px 12px;background:var(--card2);border-radius:10px}
+.cs small{display:block;color:var(--mu);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.cs b{display:block;font-size:20px;line-height:1.35;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.card h3{margin-top:16px}
+.tt{width:100%;margin-bottom:12px;border-collapse:collapse;font-size:14px;font-variant-numeric:tabular-nums}
+.tt th{padding:0 0 6px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mu);text-align:right}
+.tt td{padding:6px 0;border-top:1px solid var(--line);text-align:right}
+.tt th:first-child,.tt td:first-child{text-align:left;font-weight:600}
+.tt td:nth-child(3){color:var(--mu)}
+.acts{display:flex;flex-wrap:wrap;gap:10px}
+.pick{max-width:100%;cursor:pointer}
+.pick span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:8px;margin-top:14px;border-radius:99px;background:var(--card2);overflow:hidden}
+.bar i{display:block;width:0;height:100%;background:var(--ac);transition:width .3s linear}
+.bar.busy i{animation:pu 1.2s infinite}
+.acts+.hint,.msg+.hint{margin-top:12px}
+.note p{margin-bottom:10px}
+</style>
+</head>
+<body data-page="config">
+<header id="top"></header>
+<main class="wrap">
+<div id="auth" class="banner err" hidden><i class="ic" data-i="warn"></i><div><span id="auth-t"></span> <a href="/config">Reload</a></div></div>
+<div id="b-pw" class="banner" hidden><i class="ic" data-i="warn"></i><div>The default password is still set. Choose a new one below.</div></div>
+<div class="head"><h1>Settings</h1><span class="sub">Changes apply immediately</span></div>
+<div id="body" hidden>
+<form id="f" class="grid" novalidate autocomplete="off">
+  <section class="card">
+    <h2><i class="ic" data-i="cpu"></i>Device &amp; access</h2>
+    <div class="fld">
+      <label class="fl" for="name">Device name</label>
+      <input class="in" id="name" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <p class="hint">Also the setup Wi-Fi name. Empty = default.</p>
+    </div>
+    <div class="row2">
+      <div class="fld"><label class="fl" for="password">New password</label>
+        <input class="in" id="password" type="password" autocomplete="new-password"></div>
+      <div class="fld"><label class="fl" for="password2">Repeat password</label>
+        <input class="in" id="password2" type="password" autocomplete="new-password"></div>
+    </div>
+    <p class="hint">Leave both empty to keep the current password.</p>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="zap"></i>Ethernet</h2>
+    <div class="seg">
+      <input class="sr" type="radio" name="eth" id="eth-dhcp" value="dhcp"><label for="eth-dhcp">DHCP</label>
+      <input class="sr" type="radio" name="eth" id="eth-static" value="static"><label for="eth-static">Static</label>
+    </div>
+    <div id="static" hidden>
+      <div class="rowip">
+        <div class="fld"><label class="fl" for="ip">IP address</label>
+          <input class="in mono" id="ip" inputmode="decimal" autocomplete="off" placeholder="192.168.1.50"></div>
+        <div class="fld"><label class="fl" for="prefix">Prefix (1–30)</label>
+          <input class="in" id="prefix" type="number" min="1" max="30" inputmode="numeric" placeholder="24"></div>
+      </div>
+      <div class="fld"><label class="fl" for="gateway">Gateway <span class="mu">(optional)</span></label>
+        <input class="in mono" id="gateway" inputmode="decimal" autocomplete="off" placeholder="192.168.1.1"></div>
+    </div>
+    <label class="chk"><input type="checkbox" id="fallback">
+      <span>Art-Net fallback address<br><span class="hint">Used when DHCP gets no answer.</span></span></label>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="wifi"></i>Setup Wi-Fi</h2>
+    <div class="row2">
+      <div class="fld"><label class="fl" for="ap_channel">Channel (1–13)</label>
+        <input class="in" id="ap_channel" type="number" min="1" max="13" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="ap_after">Start delay (5–3600 s)</label>
+        <input class="in" id="ap_after" type="number" min="5" max="3600" inputmode="numeric"></div>
+    </div>
+    <p class="hint">Starts on its own when the Ethernet link is down for the start delay, when BOOT is held 3 s, or from Maintenance.</p>
+    <div class="row2">
+      <div class="fld"><label class="fl" for="ap_boot">On after each start (min, 0 = no)</label>
+        <input class="in" id="ap_boot" type="number" min="0" max="1440" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="ap_idle">Then off after no web use (min)</label>
+        <input class="in" id="ap_idle" type="number" min="1" max="240" inputmode="numeric"></div>
+    </div>
+    <div id="ap-warn" class="note warn">While the setup Wi-Fi runs, and until the next restart, the LED outputs are limited to about 1600 RGBW (2100 RGB) LEDs in total instead of about 4100: the Wi-Fi takes that memory. With "On after each start" this applies after every start, also once the Wi-Fi has switched off again.</div>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="sliders"></i>Apply</h2>
+    <div id="wnote" class="note">Changing name, password or Wi-Fi channel disconnects devices on the setup Wi-Fi, including this one if you use it. The reply may then never arrive.</div>
+    <button id="save" class="btn pri" type="submit" disabled>Save settings</button>
+    <div id="msg" class="msg" role="status" hidden></div>
+  </section>
+</form>
+
+<form id="lf" class="grid" novalidate autocomplete="off" hidden>
+  <section class="card">
+    <h2><i class="ic" data-i="fader"></i>LED strip</h2>
+    <div class="fl" id="pr-l">Input protocol</div>
+    <div class="seg" role="radiogroup" aria-labelledby="pr-l">
+      <input class="sr" type="radio" name="protocol" id="pr-artnet" value="artnet"><label for="pr-artnet">Art-Net</label>
+      <input class="sr" type="radio" name="protocol" id="pr-sacn" value="sacn"><label for="pr-sacn">sACN</label>
+    </div>
+    <p class="hint" id="pr-h"></p>
+    <div id="stab" class="note warn" hidden></div>
+    <div id="mg-box">
+      <div class="fl" id="mg-l">Two Art-Net sources on one universe</div>
+      <div class="seg" role="radiogroup" aria-labelledby="mg-l">
+        <input class="sr" type="radio" name="merge" id="mg-htp" value="htp"><label for="mg-htp">HTP</label>
+        <input class="sr" type="radio" name="merge" id="mg-ltp" value="ltp"><label for="mg-ltp">LTP</label>
+      </div>
+      <p class="hint">HTP (Art-Net default): the higher value of the two sources wins, per channel. LTP: the latest packet wins. Sources are told apart by IP address; a third is ignored, and a source silent for 10 s drops out. Consoles can switch this with ArtAddress.</p>
+    </div>
+    <div class="fl" id="lt-l">LED type</div>
+    <div class="seg" role="radiogroup" aria-labelledby="lt-l">
+      <input class="sr" type="radio" name="led_type" id="lt-rgbw" value="rgbw"><label for="lt-rgbw">RGBW</label>
+      <input class="sr" type="radio" name="led_type" id="lt-rgb" value="rgb"><label for="lt-rgb">RGB</label>
+    </div>
+    <div class="fld">
+      <label class="fl" for="order">Colour order</label>
+      <select class="in" id="order">
+        <option value="rgb">RGB(W)</option><option value="rbg">RBG(W)</option>
+        <option value="grb">GRB(W)</option><option value="gbr">GBR(W)</option>
+        <option value="brg">BRG(W)</option><option value="bgr">BGR(W)</option>
+      </select>
+      <p class="hint">The order the strip expects on its data line; white (if any) is always last. WS2812 is usually GRB, SK6812 RGBW usually GRB(W).</p>
+    </div>
+    <div class="fld">
+      <label class="fl" for="brightness">Brightness</label>
+      <div class="rng"><input id="brightness" type="range" min="1" max="100" step="1"><output id="bv" for="brightness"></output></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="grid"></i>Outputs</h2>
+    <div id="outs" class="og"></div>
+    <details class="adv" id="oadv">
+      <summary>Per-output options</summary>
+      <p class="hint">Empty type or order = the setting above. Grouping: one DMX pixel lights that many LEDs. Offset: LEDs at the start that stay dark. Reverse: the first pixel goes to the far end. DMX start: channel of the first pixel in the first universe (the next universes start at 1); lets small strips share a universe.</p>
+      <div id="oopts" class="oo"></div>
+    </details>
+    <div id="o-warn" class="note warn" hidden></div>
+    <div id="o-mem" class="note" hidden></div>
+    <p id="o-hint" class="hint"></p>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="pulse"></i>LED timing</h2>
+    <div class="fld">
+      <label class="fl" for="preset">Preset</label>
+      <div class="prow">
+        <select class="in" id="preset"></select>
+        <button id="pre-save" class="btn" type="button">Save as preset</button>
+        <button id="pre-del" class="btn" type="button" hidden>Delete</button>
+      </div>
+      <p class="hint">Presets hold bit time, pulse shape and latch and are stored on the board. Choosing one fills the fields; press Save below to use it.</p>
+    </div>
+    <div class="fld">
+      <label class="fl" for="period">Speed: time per bit</label>
+      <div class="rng"><input id="period" type="range" min="800" max="1400" step="1" aria-label="Time per bit (slider)">
+        <span class="pnum"><input class="in" id="period_n" type="number" min="500" max="3000" step="1" inputmode="numeric" aria-label="Time per bit in ns"> ns</span></div>
+      <p class="hint" id="pvh"></p>
+    </div>
+    <div class="fld">
+      <label class="fl" for="shape">Pulse shape (high time of a 0 and of a 1)</label>
+      <select class="in" id="shape"></select>
+      <p class="hint">Only shapes the output sends exactly are listed: a pulse is a whole number of I2S samples, 4 per bit (8 per bit from 1000 ns up). The shape decides whether the LEDs tell a 0 from a 1; it does not change the speed. If neighbouring LEDs flicker, try a longer 0 or a shorter 1.</p>
+      <input type="hidden" id="t0h"><input type="hidden" id="t1h">
+    </div>
+    <svg id="wave" class="wave" role="img" aria-label="The 0 bit and the 1 bit as they are sent"></svg>
+    <p class="hint" id="waveh"></p>
+    <div class="fld"><label class="fl" for="latch">Latch pause between frames (µs)</label>
+      <input class="in" id="latch" type="number" min="50" max="1000" inputmode="numeric"></div>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="cpu"></i>Timing calculator <span id="p-tm" class="pill">—</span></h2>
+    <div class="cs">
+      <div><small>Data rate</small><b id="c-rate">—</b></div>
+      <div><small>Max frames/s</small><b id="c-fps">—</b></div>
+      <div><small>Samples per bit</small><b id="c-n">—</b></div>
+      <div><small>I2S sample rate</small><b id="c-i2s">—</b></div>
+    </div>
+    <p id="c-fpsd" class="hint"></p>
+    <div id="lnote" class="note" hidden></div>
+    <h3>Pulse times <span class="sub">in ns, after rounding</span></h3>
+    <table class="tt">
+      <thead><tr><th></th><th>Actual</th><th>Datasheet</th><th>Off by</th></tr></thead>
+      <tbody id="tt"></tbody>
+    </table>
+    <div id="tnote" class="note" hidden></div>
+    <p id="thint" class="hint"></p>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="pulse"></i>Output behaviour</h2>
+    <label class="chk"><input type="checkbox" id="interp"><span>Interpolate: blend between input frames and send at the strips' full rate (smoother; one input frame of delay)</span></label>
+    <label class="chk" style="margin-top:10px"><input type="checkbox" id="dither"><span>Dithering: smoother dark fades (sends continuously at the full rate)</span></label>
+    <div class="row2" style="margin-top:14px">
+      <div class="fld"><label class="fl" for="loss">When the input stops</label>
+        <select class="in" id="loss"><option value="hold">Keep the last frame</option><option value="fade">Fade to black</option><option value="color">Show a colour</option></select></div>
+      <div class="fld"><label class="fl" for="loss_after">After (seconds)</label>
+        <input class="in" id="loss_after" type="number" min="1" max="3600" inputmode="numeric"></div>
+    </div>
+    <div class="row2" id="lossc">
+      <div class="fld"><label class="fl" for="loss_rgb">Colour</label><input class="in" id="loss_rgb" type="color" value="#000000"></div>
+      <div class="fld"><label class="fl" for="loss_w">White channel</label>
+        <div class="rng"><input id="loss_w" type="range" min="0" max="255" step="1" value="0"><output id="loss_wv" for="loss_w">0</output></div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="cpu"></i>Power limit <span id="pw-p" class="pill">—</span></h2>
+    <p class="hint">Estimated from the pixel data: the outputs are dimmed when a limit would be exceeded. 0 = no limit.</p>
+    <div class="row2">
+      <div class="fld"><label class="fl" for="power_led">Per LED at full white (W)</label>
+        <input class="in" id="power_led" type="number" min="0.001" max="50" step="0.001" inputmode="decimal"></div>
+      <div class="fld"><label class="fl" for="led_volts">Strip voltage (V, for the amps)</label>
+        <input class="in" id="led_volts" type="number" min="1" max="60" step="0.1" inputmode="decimal"></div>
+      <div class="fld"><label class="fl" for="power_out">Per output (W, e.g. its DC-DC)</label>
+        <input class="in" id="power_out" type="number" min="0" max="10000" step="1" inputmode="decimal"></div>
+      <div class="fld"><label class="fl" for="power_total">All outputs (W, the supply)</label>
+        <input class="in" id="power_total" type="number" min="0" max="40000" step="1" inputmode="decimal"></div>
+    </div>
+    <p class="hint" id="pw-h"></p>
+  </section>
+
+  <section class="card span">
+    <h2><i class="ic" data-i="sliders"></i>Apply LED settings</h2>
+    <div class="note">Applied immediately. The LED output may stutter briefly while saving.</div>
+    <button id="lsave" class="btn pri" type="submit" disabled>Save LED settings</button>
+    <div id="lmsg" class="msg" role="status" hidden></div>
+  </section>
+</form>
+
+<div class="grid" id="tp" hidden>
+  <section class="card span">
+    <h2><i class="ic" data-i="fader"></i>Test pattern <span id="tp-p" class="pill">Off</span></h2>
+    <p class="hint">Shows a pattern on all outputs without any lighting software, using the LED settings above. Art-Net and sACN are ignored while it runs; it switches itself off after 30 minutes.</p>
+    <div class="acts">
+      <button class="btn" type="button" data-tp="rainbow">Rainbow</button>
+      <button class="btn" type="button" data-tp="chase">Chase</button>
+      <button class="btn" type="button" data-tp="solid">Solid colour</button>
+      <button class="btn dng" type="button" data-tp="off">Off</button>
+    </div>
+    <div class="row2" style="margin-top:14px">
+      <div class="fld"><label class="fl" for="tp-c">Colour</label><input class="in" id="tp-c" type="color" value="#ffffff"></div>
+      <div class="fld"><label class="fl" for="tp-w">White channel (RGBW)</label>
+        <div class="rng"><input id="tp-w" type="range" min="0" max="255" step="1" value="0"><output id="tp-wv" for="tp-w">0</output></div></div>
+    </div>
+    <div id="tpmsg" class="msg" role="status" hidden></div>
+  </section>
+</div>
+
+<div class="grid">
+  <section class="card">
+    <h2><i class="ic" data-i="upload"></i>Firmware update</h2>
+    <div id="n-upd" class="note warn" hidden></div>
+    <p id="sl-h" class="hint" hidden></p>
+    <div class="acts">
+      <label id="pick" class="btn pick dis"><i class="ic" data-i="upload"></i><span id="fname">Choose firmware .bin…</span>
+        <input id="file" class="sr" type="file" accept=".bin" disabled></label>
+      <button id="go" class="btn pri" type="button" disabled>Install</button>
+      <button id="go-ip" class="btn" type="button" disabled hidden>Install into this slot</button>
+    </div>
+    <p id="ip-h" class="hint" hidden>Install into this slot keeps the other slot (e.g. WLED) as it is: the board restarts into a small updater, which takes the file and writes it over the running firmware. The running version is replaced for good, so there is no rollback to it; if the new one fails to start, the board starts the other slot.</p>
+    <div id="bar" class="bar" hidden><i></i></div>
+    <div id="umsg" class="msg" role="status" hidden></div>
+    <p class="hint">Takes 15–30 s, then the board restarts. Keep this page open. If the file picker does not open (Android’s “sign in” window), use your normal browser.</p>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="power"></i>Maintenance</h2>
+    <div id="n-rst" class="note warn" hidden></div>
+    <div id="acts" class="acts">
+      <button id="restart" class="btn" type="button" disabled>Restart</button>
+      <button id="sl-go" class="btn" type="button" hidden></button>
+      <button id="reset" class="btn dng" type="button" disabled>Reset settings</button>
+      <button id="ot-reset" class="btn dng" type="button" hidden></button>
+    </div>
+    <div id="ask" class="note warn" hidden><p id="ask-t"></p>
+      <div class="acts"><button id="ask-no" class="btn" type="button">Cancel</button>
+        <button id="ask-yes" class="btn dng" type="button"></button></div></div>
+    <label class="chk" style="margin-top:12px"><input type="checkbox" id="ffl"><span>Fast flash (QIO 80 MHz): more headroom for the network core. Applies after a restart. <span id="ffl-st" class="sub"></span></span></label>
+    <p class="hint">BOOT button on the board: click for the next test pattern (rainbow, chase, blackout, off). Click three times within 2 s (light turns white) to start the other firmware slot. Hold 3 s (light turns blue) for the setup Wi-Fi. Hold 10 s (light blinks red) to reset the password and network settings to defaults (DHCP); the name and LED settings stay.</p>
+    <p id="ot-h" class="hint" hidden></p>
+    <div id="mmsg" class="msg" role="status" hidden></div>
+    <h3>Backup</h3>
+    <p class="hint">All settings as a text file, without the password. Restoring applies them at once and keeps the current password.</p>
+    <div class="acts">
+      <button id="bk-get" class="btn" type="button">Download backup</button>
+      <label class="btn pick"><span>Restore from file…</span><input id="bk-file" type="file" accept=".txt,text/plain" hidden></label>
+    </div>
+    <div id="bkmsg" class="msg" role="status" hidden></div>
+  </section>
+
+  <section class="card span">
+    <details>
+      <summary><h2 style="display:inline-flex;margin:0"><i class="ic" data-i="cpu"></i>Diagnostics</h2></summary>
+      <p class="hint" id="dbg-h">For troubleshooting: raw data from the API, the other firmware's log, and actions to test things.</p>
+      <div class="acts">
+        <button id="dbg-status" class="btn" type="button">Status (raw)</button>
+        <button id="dbg-config" class="btn" type="button">Settings (raw)</button>
+        <button id="dbg-log" class="btn" type="button">Other firmware's log</button>
+        <button id="dbg-wifi" class="btn" type="button">Start setup Wi-Fi</button>
+        <button id="dbg-bl" class="btn" type="button">Install bootloader</button>
+        <button id="dbg-panic" class="btn dng" type="button">Test crash</button>
+      </div>
+      <pre id="dbg" class="mono" style="max-height:60vh;overflow:auto;white-space:pre-wrap;font-size:12px" hidden></pre>
+    </details>
+  </section>
+</div>
+</div>
+</main>
+<script><!--COMMON_JS--></script>
+<script>
+'use strict';
+const {$, getJSON, postForm, enqueue, sleep, setName, fmtBytes, fmtPort} = AN;
+AN.init();
+
+const AUTH = 'Login missing or changed: reload this page and the browser will ask for it again (user “admin”). Android’s “sign in” window cannot log in; use your normal browser.';
+const HOLD = 'The new firmware is still on trial: updates and restarts are paused. Try again in a minute.';
+const DROP = 'No reply from the board. On the setup Wi-Fi that is expected after changing name, password or channel: reconnect (to the new name/password) and reload.';
+const IP = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$/;
+const WAIT = 20; // seconds the board needs to restart
+let cfg = null, busy = false, file = null;
+
+const val = id => $(id).value.trim();
+const int = (id, lo, hi) => /^\d+$/.test(val(id)) && +val(id) >= lo && +val(id) <= hi;
+const mode = () => ($('eth-static').checked ? 'static' : 'dhcp');
+const show = (id, on) => { $(id).hidden = !on; };
+function msg(id, kind, text) { const e = $(id); e.hidden = !kind; e.className = 'msg ' + kind; e.textContent = text || ''; }
+// These changes disconnect devices on the setup Wi-Fi.
+const drops = () => !!cfg && (val('name') !== cfg.name || $('password').value !== '' || +val('ap_channel') !== cfg.ap_channel);
+
+// Inline confirm: window.confirm() is silently suppressed in captive-portal WebViews.
+let todo = null;
+const unask = () => { show('ask', false); show('acts', true); };
+function ask(text, label, fn) {
+  $('ask-t').textContent = text; $('ask-yes').textContent = label;
+  todo = fn; show('acts', false); show('ask', true); $('ask-no').focus();
+}
+$('ask-no').onclick = unask;
+$('ask-yes').onclick = () => { unask(); todo(); };
+
+/* ---- Settings: state -> UI ---- */
+function enable() {
+  const ok = !!cfg && !busy, upd = ok && cfg.ota_available && cfg.restart_allowed;
+  $('save').disabled = !ok;
+  $('lsave').disabled = !ok;
+  $('file').disabled = !upd;
+  $('pick').classList.toggle('dis', !upd);
+  $('go').disabled = !(upd && file);
+  $('go-ip').disabled = !(upd && file);
+  $('restart').disabled = !(ok && cfg.restart_allowed);
+  $('reset').disabled = !ok;
+}
+function setBusy(b) { busy = b; enable(); }
+
+function sync(e) {
+  show('static', mode() === 'static');
+  $('wnote').className = 'note' + (drops() ? ' warn' : '');
+  if (e && e.target.removeAttribute) e.target.removeAttribute('aria-invalid');
+}
+
+// part: 'dev' = only the device/network form, 'led' = only the LED form, none = both.
+// After a save only that form is refilled, so unsaved edits in the other one survive.
+function fill(c, part) {
+  cfg = c;
+  setName(c.name || c.default_name);
+  if (part !== 'led') {
+    $('name').value = c.name; $('name').placeholder = c.default_name;
+    $('password').value = $('password2').value = '';
+    ($('eth-' + c.eth) || $('eth-dhcp')).checked = true;
+    $('ip').value = c.ip; $('prefix').value = c.prefix; $('gateway').value = c.gateway;
+    $('fallback').checked = !!c.fallback;
+    $('ap_channel').value = c.ap_channel; $('ap_after').value = c.ap_after;
+    $('ap_boot').value = c.ap_boot; $('ap_idle').value = c.ap_idle;
+  }
+  if (part !== 'dev') fillLed(c);
+  show('b-pw', c.default_password);
+  const nu = !c.ota_available ? 'Over-the-air updates are not available on this device.' : !c.restart_allowed ? HOLD : '';
+  $('n-upd').textContent = nu; show('n-upd', nu);
+  $('n-rst').textContent = HOLD; show('n-rst', !c.restart_allowed);
+  sync(); enable();
+}
+// Reload the form; a 401 here means the login changed (e.g. after a reset): say so.
+const refill = (id, part) => getJSON('/api/config').then(c => fill(c, part), e => { if (e.status === 401) $(id).textContent += ' ' + AUTH; });
+
+/* ---- Save ---- */
+function validate() {
+  const bad = [];
+  const chk = (id, ok, what) => { if (!ok) { bad.push(what); $(id).setAttribute('aria-invalid', 'true'); } };
+  $('f').querySelectorAll('[aria-invalid]').forEach(i => i.removeAttribute('aria-invalid'));
+  chk('password2', $('password').value === $('password2').value, 'passwords differ');
+  if (mode() === 'static') {
+    chk('ip', IP.test(val('ip')), 'IP address');
+    chk('prefix', int('prefix', 1, 30), 'prefix 1–30');
+    chk('gateway', !val('gateway') || IP.test(val('gateway')), 'gateway');
+  }
+  chk('ap_channel', int('ap_channel', 1, 13), 'channel 1–13');
+  chk('ap_after', int('ap_after', 5, 3600), 'delay 5–3600 s');
+  chk('ap_boot', int('ap_boot', 0, 1440), 'Wi-Fi after start 0–1440 min');
+  chk('ap_idle', int('ap_idle', 1, 240), 'Wi-Fi idle 1–240 min');
+  if (bad.length) { msg('msg', 'err', 'Please check: ' + bad.join(', ') + '.'); $('f').querySelector('[aria-invalid]').focus(); }
+  return !bad.length;
+}
+
+$('f').onsubmit = async e => {
+  e.preventDefault();
+  if (busy || !validate()) return;
+  const drop = drops(), n = mode() === 'static' ? {ip: val('ip'), prefix: val('prefix'), gateway: val('gateway')} : cfg;
+  const body = {name: val('name'), password: $('password').value, password2: $('password2').value, eth: mode(),
+    ip: n.ip, prefix: n.prefix, gateway: n.gateway, ap_channel: val('ap_channel'), ap_after: val('ap_after'),
+    ap_boot: val('ap_boot'), ap_idle: val('ap_idle')};
+  if ($('fallback').checked) body.fallback = '1';
+  setBusy(true); msg('msg', 'info', 'Saving…');
+  try {
+    const r = await postForm('/config', body);
+    if (r.ok) {
+      const pw = $('password').value !== '';
+      $('password').value = $('password2').value = '';
+      // After a password change the browser's cached login is stale: the next request would 401.
+      if (pw) msg('msg', 'ok', (r.text || 'Saved.') + ' Password changed: reload this page and sign in with the new password.');
+      else { msg('msg', 'ok', r.text || 'Saved.'); refill('msg', 'dev'); }
+    }
+    else msg('msg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+  } catch (err) {
+    msg('msg', drop ? 'info' : 'err', drop ? DROP : 'No reply from the board. Check the connection and try again.');
+  }
+  setBusy(false);
+};
+$('f').addEventListener('input', sync);
+$('f').addEventListener('change', sync);
+
+/* ---- LED output: form, universe ranges, live timing calculator ---- */
+const PRESETS = {std: [300, 600, 1200], fast: [260, 520, 1040]};  // T0H, T1H, bit time (ns)
+const TIMES = [['T0H', 300], ['T1H', 600], ['T0L', 900], ['T1L', 600]]; // datasheet nominal (ns)
+const ORDERS = ['rgb', 'rbg', 'grb', 'gbr', 'brg', 'bgr'];
+const LV = ['ok', 'warn', 'err'];
+const level = d => (d <= 150 ? 0 : d <= 250 ? 1 : 2);             // |deviation| ns -> green / amber / red
+const num = id => (/^\d+$/.test(val(id)) ? +val(id) : NaN);        // NaN = not a whole number
+const within = (x, lo, hi) => x >= lo && x <= hi;                  // false for NaN
+const idiv = (a, b) => Math.floor(a / b);                          // integer division (positive operands)
+const lim = () => Object.assign({max_leds: 512, led_bytes: 8176, led_bytes_wifi: 8176, max_samples_per_bit: 8, max_sample_rate: 8000000}, cfg && cfg.limits);
+let ledMem = null;   // status: LED memory in use, Wi-Fi cap, LEDs driven per output
+
+$('outs').innerHTML = '<span></span><span class="oh">LEDs (0 = off)</span><span class="oh">First universe</span>' +
+  [1, 2, 3, 4].map(i => '<b>Output ' + i + '</b>' +
+    '<input class="in" id="o' + i + '_leds" type="number" min="0" max="512" inputmode="numeric" aria-label="Output ' + i + ' LED count">' +
+    '<input class="in" id="o' + i + '_univ" type="number" min="0" max="32767" inputmode="numeric" aria-label="Output ' + i + ' first universe">' +
+    '<span class="rg" id="r' + i + '"></span>').join('');
+$('oopts').innerHTML = '<span></span><span class="oh">Type</span><span class="oh">Order</span><span class="oh">Reverse</span>' +
+  '<span class="oh">Group</span><span class="oh">Offset</span><span class="oh">DMX start</span>' +
+  [1, 2, 3, 4].map(i => '<b>Output ' + i + '</b>' +
+    '<select class="in" id="o' + i + '_type" aria-label="Output ' + i + ' LED type"><option value="">Same</option><option value="rgb">RGB</option><option value="rgbw">RGBW</option></select>' +
+    '<select class="in" id="o' + i + '_order" aria-label="Output ' + i + ' colour order"><option value="">Same</option>' +
+      ['rgb', 'rbg', 'grb', 'gbr', 'brg', 'bgr'].map(o => '<option value="' + o + '">' + o.toUpperCase() + '</option>').join('') + '</select>' +
+    '<input type="checkbox" id="o' + i + '_rev" aria-label="Output ' + i + ' reversed">' +
+    '<input class="in" id="o' + i + '_group" type="number" min="1" max="64" inputmode="numeric" aria-label="Output ' + i + ' grouping">' +
+    '<input class="in" id="o' + i + '_offset" type="number" min="0" max="512" inputmode="numeric" aria-label="Output ' + i + ' offset">' +
+    '<input class="in" id="o' + i + '_start" type="number" min="1" max="512" inputmode="numeric" aria-label="Output ' + i + ' DMX start address">').join('');
+
+// Same algorithm as quantize() in the firmware (core/src/led.rs, see docs/api.md): one LED bit = n I2S samples,
+// the sample rate makes the bit time exact, pulses are rounded to whole samples. Units: ns in, ps inside.
+function quantize(t0h, t1h, period) {
+  const L = lim();
+  let best = null;
+  for (const n of [4, 8]) {                                         // the only counts the encoder runs at full speed
+    if (n > L.max_samples_per_bit) break;
+    const rate = idiv(n * 1e9, period);
+    if (rate > L.max_sample_rate) break;
+    const s = idiv(period * 1000, n);                              // sample length (ps)
+    const h0 = Math.min(Math.max(idiv(t0h * 1000 + idiv(s, 2), s), 1), n - 2);
+    const h1 = Math.min(Math.max(idiv(t1h * 1000 + idiv(s, 2), s), h0 + 1), n - 1);
+    const worst = Math.max(Math.abs(h0 * s - t0h * 1000), Math.abs(h1 * s - t1h * 1000)); // ps
+    const q = {n, rate, s, h0, h1, worst};
+    if (worst <= 30000) return q;                                  // first n that is good enough
+    if (!best || worst < best.worst) best = q;
+  }
+  return best;
+}
+
+function ledRead() {
+  return {
+    rgbw: $('lt-rgbw').checked, order: $('order').value, brightness: num('brightness'),
+    protocol: $('pr-sacn').checked ? 'sacn' : 'artnet', merge: $('mg-ltp').checked ? 'ltp' : 'htp',
+    interp: $('interp').checked, dither: $('dither').checked, loss: $('loss').value, loss_after: num('loss_after'),
+    loss_color: $('loss_rgb').value.slice(1) + (+$('loss_w').value).toString(16).padStart(2, '0'),
+    power_led_mw: Math.round(parseFloat(val('power_led') || '0') * 1000),
+    power_out_mw: Math.round(parseFloat(val('power_out') || '0') * 1000),
+    power_total_mw: Math.round(parseFloat(val('power_total') || '0') * 1000),
+    led_volts_dv: Math.round(parseFloat(val('led_volts') || '0') * 10),
+    outs: [1, 2, 3, 4].map(i => ({leds: num('o' + i + '_leds'), univ: num('o' + i + '_univ'),
+      type: val('o' + i + '_type'), order: val('o' + i + '_order'), rev: $('o' + i + '_rev').checked,
+      group: num('o' + i + '_group'), offset: num('o' + i + '_offset'), start: num('o' + i + '_start')})),
+    t0h: num('t0h'), t1h: num('t1h'), period: num('period'), latch: num('latch')
+  };
+}
+// Mirrors the ranges and rules in docs/api.md. Returns [[field id, message], ...].
+function ledCheck(v) {
+  const bad = [], max = lim().max_leds;
+  const chk = (id, ok, what) => { if (!ok) bad.push([id, what]); };
+  chk('order', ORDERS.includes(v.order), 'colour order');
+  chk('brightness', within(v.brightness, 1, 100), 'brightness 1–100');
+  v.outs.forEach((o, i) => {
+    chk('o' + (i + 1) + '_leds', within(o.leds, 0, max), 'output ' + (i + 1) + ' LEDs 0–' + max);
+    chk('o' + (i + 1) + '_univ', within(o.univ, 0, 32767), 'output ' + (i + 1) + ' universe 0–32767');
+    chk('o' + (i + 1) + '_group', within(o.group, 1, 64), 'output ' + (i + 1) + ' grouping 1–64');
+    chk('o' + (i + 1) + '_offset', within(o.offset, 0, max), 'output ' + (i + 1) + ' offset 0–' + max);
+    chk('o' + (i + 1) + '_start', within(o.start, 1, 513 - (oRgbw(v, o) ? 4 : 3)), 'output ' + (i + 1) + ' DMX start 1–' + (513 - (oRgbw(v, o) ? 4 : 3)));
+  });
+  const bytes = wireBytes(v);
+  if (bytes > lim().led_bytes) {
+    v.outs.forEach((o, i) => { if (o.leds > 0) bad.push(['o' + (i + 1) + '_leds', 'all outputs together at most ' + memText(lim().led_bytes)]); });
+  }
+  chk('t0h', within(v.t0h, 100, 1000), 'T0H 100–1000 ns');
+  chk('t1h', within(v.t1h, 150, 2000), 'T1H 150–2000 ns');
+  chk('period', within(v.period, 500, 3000), 'bit time 500–3000 ns');
+  chk('latch', within(v.latch, 50, 1000), 'latch 50–1000 µs');
+  chk('loss_after', within(v.loss_after, 1, 3600), 'signal-loss delay 1–3600 s');
+  chk('power_led', within(v.power_led_mw, 1, 50000), 'power per LED 0.001–50 W');
+  chk('led_volts', within(v.led_volts_dv, 10, 600), 'strip voltage 1–60 V');
+  chk('power_out', within(v.power_out_mw, 0, 10000000), 'per-output limit 0–10000 W');
+  chk('power_total', within(v.power_total_mw, 0, 40000000), 'total limit 0–40000 W');
+  chk('t0h', !(v.t0h >= v.t1h), 'T0H must be shorter than T1H');             // NaN: no extra message
+  chk('t1h', !(v.t0h >= v.t1h), 'T0H must be shorter than T1H');
+  chk('period', !(v.period < v.t1h + 100), 'bit time at least T1H + 100 ns');
+  return bad;
+}
+
+// Universe range of each output (null = off or invalid); consecutive universes, 128 RGBW / 170 RGB LEDs each.
+// Per-output helpers, the same rules as OutputCfg in core/src/led.rs.
+const oRgbw = (v, o) => (o.type ? o.type === 'rgbw' : v.rgbw);
+const oPixels = o => Math.ceil(Math.max(0, (o.leds || 0) - (o.offset || 0)) / Math.max(1, o.group || 1));
+function oUniverses(v, o) {
+  const ch = oRgbw(v, o) ? 4 : 3, px = oPixels(o);
+  const first = Math.floor((512 - Math.min(Math.max((o.start || 1) - 1, 0), 512 - ch)) / ch);
+  return px === 0 ? 0 : px <= first ? 1 : 1 + Math.ceil((px - first) / Math.floor(512 / ch));
+}
+function renderOutputs(v) {
+  const r = v.outs.map(o => {
+    if (!(o.leds > 0) || !within(o.univ, 0, 32767)) return null;
+    const n = oUniverses(v, o);
+    if (n === 0) return null;
+    return {a: o.univ, b: o.univ + n - 1, n};
+  });
+  const shared = [], hot = [false, false, false, false];
+  for (let i = 0; i < 4; i++) {
+    for (let j = i + 1; j < 4; j++) {
+      if (!r[i] || !r[j] || r[i].a > r[j].b || r[j].a > r[i].b) continue;
+      const lo = Math.max(r[i].a, r[j].a), hi = Math.min(r[i].b, r[j].b);
+      shared.push('Outputs ' + (i + 1) + ' and ' + (j + 1) + ' share ' + (lo === hi ? 'universe ' + lo : 'universes ' + lo + '–' + hi));
+      hot[i] = hot[j] = true;
+    }
+  }
+  r.forEach((x, i) => {
+    let t = '', w = hot[i];
+    if (x && x.b > 32767) { t = 'Needs ' + x.n + ' universes: runs past 32767'; w = true; }
+    else if (x) t = (x.n === 1 ? 'Universe ' + x.a : 'Universes ' + x.a + '–' + x.b) + ' · ' + fmtPort(x.a) + (x.n > 1 ? ' – ' + fmtPort(x.b) : '');
+    else if (v.outs[i].leds === 0) t = 'Off';
+    $('r' + (i + 1)).textContent = t;
+    $('r' + (i + 1)).className = 'rg' + (w ? ' w' : '');
+  });
+  $('o-warn').textContent = shared.length ? shared.join('. ') + '. Overlapping outputs show the same Art-Net data.' : '';
+  show('o-warn', shared.length);
+  $('o-hint').textContent = 'Each output uses consecutive universes, shown as Net:Sub:Uni: ' +
+    (v.rgbw ? '128 RGBW LEDs (512 channels)' : '170 RGB LEDs (510 channels)') + ' per universe.';
+  renderMem(v);
+}
+
+// LED memory: all outputs share it (see docs/api.md). The setup Wi-Fi takes part of it while it runs.
+const wireBytes = v => v.outs.reduce((a, o) => a + (within(o.leds, 0, lim().max_leds) ? o.leds * (oRgbw(v, o) ? 4 : 3) : 0), 0);
+const memText = b => Math.floor(b / 4) + ' RGBW or ' + Math.floor(b / 3) + ' RGB LEDs';
+function renderMem(v) {
+  const b = wireBytes(v), L = lim(), el = $('o-mem');
+  let t = 'LED memory: ' + Math.round(b / L.led_bytes * 100) + ' % used (room for ' + memText(L.led_bytes) + ' on all outputs together).';
+  let kind = b > L.led_bytes ? 'warn' : '';
+  const eff = ledMem && ledMem.effective_leds, conf = v.outs.map(o => o.leds || 0);
+  if (ledMem && ledMem.wifi_capped && eff && conf.some((n, i) => eff[i] < n)) {
+    kind = 'warn';
+    t = 'The setup Wi-Fi is on and uses part of the LED memory: the outputs are capped to ' + eff.join(' / ') +
+      ' LEDs until the next restart (configured: ' + conf.join(' / ') + '). Restart with Ethernet connected to lift the cap. ' + t;
+  } else if (b > L.led_bytes_wifi) {
+    t += ' If the setup Wi-Fi starts (BOOT held, or no Ethernet), the outputs are capped to ' + memText(L.led_bytes_wifi) +
+      ' together, shared evenly, until the next restart; the LEDs black out briefly at that moment.';
+  }
+  el.className = 'note' + (kind ? ' ' + kind : '');
+  el.textContent = t;
+  show('o-mem', b > 0);
+}
+
+// Live calculator: data rate, samples/bit, I2S rate, actual pulse times vs. the datasheet, max fps.
+function renderCalc(v, bad) {
+  const bid = bad.map(b => b[0]);
+  const q = ['t0h', 't1h', 'period'].some(id => bid.includes(id)) ? null : quantize(v.t0h, v.t1h, v.period);
+  const set = (id, t) => { $(id).textContent = t; };
+  // The longest output on the wire (LEDs x channels) sets the frame time.
+  const wire = v.outs.map(o => (within(o.leds, 0, lim().max_leds) ? o.leds * (oRgbw(v, o) ? 4 : 3) : 0));
+  const big = Math.max(0, ...wire), bi = wire.indexOf(big), leds = big ? v.outs[bi].leds : 0;
+  let fps = '—', fpsd = leds ? '' : 'No output enabled.';
+  if (q && leds && !bid.includes('latch')) {
+    const ns = big * 8 * v.period + v.latch * 1000;   // one frame incl. latch
+    fps = Math.floor(1e9 / ns);
+    fpsd = 'Largest output: ' + leds + ' ' + (oRgbw(v, v.outs[bi]) ? 'RGBW' : 'RGB') + ' LEDs, ' + (ns / 1e6).toFixed(2) +
+      ' ms per frame including the ' + v.latch + ' µs latch.';
+  }
+  set('c-rate', q ? (1e6 / v.period).toFixed(1) + ' kHz' : '—');
+  set('c-n', q ? q.n : '—');
+  set('c-i2s', q ? (q.rate / 1e6).toFixed(3) + ' MHz' : '—');
+  set('c-fps', fps); set('c-fpsd', fpsd);
+  set('pvh', q ? (1e6 / v.period).toFixed(0) + ' kHz data rate' + (leds && fps !== '—' ? ', up to ' + fps + ' frames/s with ' + leds + ' LEDs per output' : '') +
+    '. Shorter is faster, as long as your LEDs keep up: test with your strip.' : '');
+  drawWave(q, v.period);
+  renderLoad(v, typeof fps === 'number' ? fps : 0);
+  show('tnote', !!q);
+  if (!q) {
+    unstable.timing = ''; renderStab();
+    $('tt').innerHTML = '';
+    $('p-tm').className = 'pill'; set('p-tm', 'Check inputs'); set('thint', '');
+    return;
+  }
+  const act = [Math.round(q.h0 * q.s / 1000), Math.round(q.h1 * q.s / 1000)]; // T0H, T1H (ns)
+  act.push(v.period - act[0], v.period - act[1]);                            // T0L, T1L
+  const dev = TIMES.map((t, i) => act[i] - t[1]), lv = dev.map(d => level(Math.abs(d)));
+  const worst = Math.max(...lv);
+  $('tt').innerHTML = TIMES.map((t, i) => '<tr><td>' + t[0] + '</td><td>' + act[i] + '</td><td>' + t[1] + ' ± 150</td><td>' +
+    '<span class="pill ' + LV[lv[i]] + '">' + (dev[i] > 0 ? '+' : dev[i] < 0 ? '−' : '±') + Math.abs(dev[i]) + '</span></td></tr>').join('');
+  const names = TIMES.filter((t, i) => lv[i] >= worst).map(t => t[0]).join(', ');
+  unstable.timing = worst >= 2 ? 'pulse times far outside the datasheet (' + names + ')' : '';
+  renderStab();
+  $('p-tm').className = 'pill ' + LV[worst];
+  set('p-tm', ['In tolerance', 'Marginal', 'Out of tolerance'][worst]);
+  $('tnote').className = 'note ' + LV[worst];
+  set('tnote', [
+    'All four times are within ±150 ns of the datasheet.',
+    'Outside the datasheet (' + names + ' more than ±150 ns off): test with your strip.',
+    'Far outside the datasheet (' + names + ' more than ±250 ns off): test with your strip, it may not work at all.'][worst]);
+  const err = Math.round(q.worst / 1000);                                    // rounding error (ns)
+  set('thint', 'Each bit is ' + q.n + ' samples of ' + Number((q.s / 1000).toFixed(1)) + ' ns. ' +
+    (err ? 'Pulses snap to whole samples, up to ' + err + ' ns off what you entered.' : 'The pulses match what you entered.') +
+    (q.n > 4 ? ' 8 samples per bit: finer pulse steps at twice the I2S rate.' : ''));
+}
+
+/* Input load against the limits measured on this board (16 universes, unicast, 0 % loss; see docs/api.md).
+   Without fast flash (QIO 80 MHz) the network core is slower: estimates from earlier measurements. */
+const LIMITS = {artnet: {fast: 2700, slow: 1500}, sacn: {fast: 2050, slow: 1150}};   // packets/s
+let flashFast = true;
+let unstable = {load: '', burst: '', timing: ''};
+function renderLoad(v, fps) {
+  const used = new Set();
+  v.outs.forEach(o => { if (o.leds > 0) for (let k = 0; k < oUniverses(v, o); k++) used.add(o.univ + k); });
+  const n = used.size, proto = v.protocol === 'sacn' ? 'sacn' : 'artnet';
+  const limit = LIMITS[proto][flashFast ? 'fast' : 'slow'], need = n * fps, r = limit ? need / limit : 0;
+  const el = $('lnote');
+  unstable.load = '';
+  unstable.burst = n > 48 ? n + ' universes: senders that send all universes back to back may lose the last ones (measured: 48 arrive at about 99 %)' : '';
+  if (!n || !fps) { show('lnote', false); renderStab(); return; }
+  const limTxt = (proto === 'sacn' ? 'sACN' : 'Art-Net') + ' limit of about ' + limit + ' packets/s' +
+    (flashFast ? ' (measured on this board)' : ' (estimate: fast flash is off)');
+  const most = Math.floor(limit / n);
+  if (r > 1) {
+    unstable.load = 'input load: ' + n + ' universes at ' + fps + ' frames/s need ' + need + ' packets/s, above the ' + limTxt;
+    el.className = 'note warn';
+    el.textContent = 'Likely unstable: at the full output rate of ' + fps + ' frames/s, the ' + n + ' universes need ' + need +
+      ' packets/s, more than the ' + limTxt + '. Packets will be lost: send at most ' + most + ' frames/s, or use fewer universes.';
+  } else if (r > 0.8) {
+    el.className = 'note warn';
+    el.textContent = 'Close to the limit: at ' + fps + ' frames/s the ' + n + ' universes need ' + need + ' packets/s, ' +
+      Math.round(r * 100) + ' % of the ' + limTxt + '. Other traffic (a second console, ArtPoll floods) may cause loss; ' + most + ' frames/s is the most it takes.';
+  } else {
+    el.className = 'note ok';
+    el.textContent = 'Input load at the full output rate: ' + n + ' universes × ' + fps + ' frames/s = ' + need + ' packets/s, ' +
+      Math.round(r * 100) + ' % of the ' + limTxt + '.';
+  }
+  show('lnote', true);
+  renderStab();
+}
+// One summary at the top of the card when the setup is likely unstable.
+function renderStab() {
+  const why = [unstable.load, unstable.burst, unstable.timing].filter(Boolean);
+  $('stab').textContent = why.length ? 'This setup is likely unstable: ' + why.join('; ') + '. Details below.' : '';
+  show('stab', why.length > 0);
+}
+
+// Auto pulses: a quarter and a half of the bit time (the datasheet's 300/600 of 1200 ns).
+
+// Pulse shapes the output sends exactly at this bit time: [h0, h1, n], pulses of h0 and h1 of n samples
+// (the same choices as quantize()), within the accepted pulse ranges, each ratio once.
+function shapes(period) {
+  const L = lim(), out = [];
+  for (const n of [4, 8]) {
+    if (n > L.max_samples_per_bit || idiv(n * 1e9, period) > L.max_sample_rate) break;
+    for (let h0 = 1; h0 <= n - 2; h0++) {
+      for (let h1 = h0 + 1; h1 <= n - 1; h1++) {
+        const a = pulseNs(period, h0, n), b = pulseNs(period, h1, n);
+        if (!within(a, 100, 1000) || !within(b, 150, 2000)) continue;
+        if (!out.some(x => x[0] * n === h0 * x[2] && x[1] * n === h1 * x[2])) out.push([h0, h1, n]);
+      }
+    }
+  }
+  return out.sort((x, y) => x[0] / x[2] - y[0] / y[2] || x[1] / x[2] - y[1] / y[2]);
+}
+const pulseNs = (period, h, n) => Math.round(period * h / n);
+const FR = {'1/4': '¼', '2/4': '½', '3/4': '¾', '1/8': '⅛', '2/8': '¼', '3/8': '⅜', '4/8': '½', '5/8': '⅝', '6/8': '¾', '7/8': '⅞'};
+const frac = (h, n) => FR[h + '/' + n] || h + '/' + n;
+let shapeList = [];
+// Lists the shapes for the bit time and picks the one closest to the pulses t0h/t1h.
+function fillShapes(period, t0h, t1h) {
+  shapeList = shapes(period);
+  let best = 0, bd = Infinity;
+  shapeList.forEach((x, i) => {
+    const d = Math.abs(t0h / period - x[0] / x[2]) + Math.abs(t1h / period - x[1] / x[2]);
+    if (d < bd - 1e-9) { bd = d; best = i; }
+  });
+  $('shape').innerHTML = shapeList.map((x, i) => '<option value="' + i + '">0: ' + frac(x[0], x[2]) + ' = ' +
+    pulseNs(period, x[0], x[2]) + ' ns · 1: ' + frac(x[1], x[2]) + ' = ' + pulseNs(period, x[1], x[2]) + ' ns' +
+    (x[0] * 4 === x[2] && x[1] * 2 === x[2] ? ' (datasheet ratio)' : '') + '</option>').join('');
+  $('shape').value = best;
+  applyShape(period);
+}
+function applyShape(period) {
+  const x = shapeList[+$('shape').value];
+  if (x) { $('t0h').value = pulseNs(period, x[0], x[2]); $('t1h').value = pulseNs(period, x[1], x[2]); }
+}
+
+/* Timing presets: two built in, the rest stored on the board (settings key "presets"). */
+let userPresets = [];
+const presetKey = v => {
+  const b = Object.keys(PRESETS).find(k => PRESETS[k][0] === v.t0h && PRESETS[k][1] === v.t1h && PRESETS[k][2] === v.period);
+  const u = userPresets.findIndex(p => p.t0h === v.t0h && p.t1h === v.t1h && p.period === v.period && p.latch === v.latch);
+  return u >= 0 ? 'u' + u : b || 'custom';
+};
+function fillPresets(sel) {
+  const esc = t => t.replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+  $('preset').innerHTML = '<option value="std">Standard (300 / 600 / 1200 ns)</option>' +
+    '<option value="fast">Fast, in tolerance (260 / 520 / 1040 ns)</option>' +
+    userPresets.map((p, i) => '<option value="u' + i + '">' + esc(p.name) + ' (' + p.t0h + ' / ' + p.t1h + ' / ' + p.period + ' ns, latch ' + p.latch + ' µs)</option>').join('') +
+    '<option value="custom">Custom</option>';
+  $('preset').value = sel;
+  show('pre-del', sel.startsWith('u'));
+}
+const presetStr = list => list.map(p => [p.name, p.period, p.t0h, p.t1h, p.latch].join('|')).join(';');
+async function savePresets(list, sel) {
+  try {
+    const r = await postForm('/config', {presets: presetStr(list)});
+    if (!r.ok) return msg('lmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+    userPresets = list;
+    fillPresets(sel);
+    msg('lmsg', 'ok', 'Presets saved on the board.');
+  } catch (e) { msg('lmsg', 'err', 'No reply from the board.'); }
+}
+$('pre-save').onclick = () => {
+  const v = ledRead();
+  if (renderLed().some(b => ['t0h', 't1h', 'period', 'latch'].includes(b[0]))) return msg('lmsg', 'err', 'Fix the timing first.');
+  const name = (prompt('Name for this preset (up to 24 characters):', '') || '').trim();
+  if (!name) return;
+  if (name.length > 24 || /[|;"\\]/.test(name) || /[^\x20-\x7e]/.test(name)) return msg('lmsg', 'err', 'Use up to 24 plain characters, without | ; " or \\.');
+  const list = userPresets.filter(p => p.name !== name);
+  if (list.length >= 8) return msg('lmsg', 'err', 'At most 8 presets: delete one first.');
+  list.push({name, period: v.period, t0h: v.t0h, t1h: v.t1h, latch: v.latch});
+  savePresets(list, 'u' + (list.length - 1));
+};
+$('pre-del').onclick = () => {
+  const i = +$('preset').value.slice(1), p = userPresets[i];
+  if (!p || !confirm('Delete the preset "' + p.name + '"?')) return;
+  savePresets(userPresets.filter((_, k) => k !== i), 'custom');
+};
+const fit = (id, x) => { const e = $(id); if (x < +e.min) e.min = x; if (x > +e.max) e.max = x; }; // keep loaded values on the slider
+
+// One bit of each kind as it is really sent: sample steps, datasheet window (±150 ns), the pulse.
+function drawWave(q, period) {
+  const svg = $('wave');
+  if (!q) { svg.innerHTML = ''; return; }
+  const W = svg.clientWidth || 600, H = 150, L = 44, R = 8, lane = 52, gap = 16, top = 8;
+  const x = ns => L + (W - L - R) * ns / period, sns = q.s / 1000;
+  const r = v => Math.round(v * 10) / 10;
+  let g = '';
+  for (let i = 0; i <= q.n; i++) g += '<line class="wg" x1="' + r(x(i * sns)) + '" y1="' + top + '" x2="' + r(x(i * sns)) + '" y2="' + (top + 2 * lane + gap) + '"/>';
+  [['0', q.h0, 300], ['1', q.h1, 600]].forEach((b, k) => {
+    const y0 = top + k * (lane + gap), yh = y0 + 4, yl = y0 + lane - 4, hi = Math.round(b[1] * sns), lv = level(Math.abs(hi - b[2]));
+    const a = Math.max(0, b[2] - 150), z = Math.min(period, b[2] + 150);
+    g += '<rect class="wb" x="' + r(x(a)) + '" y="' + y0 + '" width="' + r(x(z) - x(a)) + '" height="' + lane + '"/>';
+    g += '<polyline class="wl ' + LV[lv] + '" points="' + [[0, yl], [0, yh], [hi, yh], [hi, yl], [period, yl]].map(p => r(x(p[0])) + ',' + p[1]).join(' ') + '"/>';
+    g += '<text class="wn" x="' + (L - 8) + '" y="' + (y0 + lane / 2 + 4) + '" text-anchor="end">' + b[0] + '</text>';
+    g += '<text x="' + r((x(0) + x(hi)) / 2) + '" y="' + (yh + 16) + '" text-anchor="middle">' + hi + ' ns</text>';
+    g += '<text x="' + r((x(hi) + x(period)) / 2) + '" y="' + (yl - 6) + '" text-anchor="middle">' + (period - hi) + ' ns low</text>';
+  });
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  svg.innerHTML = g;
+  $('waveh').textContent = 'Each bit is ' + q.n + ' samples of ' + Number(sns.toFixed(1)) + ' ns (dashed lines). ' +
+    'Green band: where the datasheet allows the pulse to end. The line turns amber or red outside it.';
+}
+addEventListener('resize', () => { if (!$('lf').hidden) renderLed(); });
+
+function renderLed() {
+  const v = ledRead(), bad = ledCheck(v);
+  $('lf').querySelectorAll('[aria-invalid]').forEach(i => i.removeAttribute('aria-invalid'));
+  bad.forEach(b => $(b[0]).setAttribute('aria-invalid', 'true'));
+  Array.from($('order').options).forEach(o => { o.textContent = o.value.toUpperCase() + (v.rgbw ? '(W)' : ''); });
+  $('bv').textContent = v.brightness + ' %';
+  show('lossc', v.loss === 'color');
+  $('loss_wv').textContent = $('loss_w').value;
+  {
+    // Full white on the longest output: watts, and amps at the strip voltage.
+    const w = Math.max(...v.outs.map(o => o.leds || 0)) * v.power_led_mw / 1000, volts = v.led_volts_dv / 10;
+    $('pw-h').textContent = 'Full white on the longest output (' + Math.max(...v.outs.map(o => o.leds || 0)) +
+      ' LEDs) takes about ' + w.toFixed(0) + ' W, ' + (volts > 0 ? (w / volts).toFixed(1) : '?') + ' A at ' + volts + ' V.' +
+      (v.power_out_mw || v.power_total_mw ? '' : ' No limit set.');
+  }
+  show('mg-box', v.protocol !== 'sacn');
+  $('pr-h').textContent = v.protocol === 'sacn'
+    ? 'sACN (E1.31) on UDP 5568, multicast and unicast. sACN numbers universes from 1: sACN universe 1 feeds "First universe" 0 below. With several sources, the highest priority wins.'
+    : 'Art-Net on UDP 6454. The node answers ArtPoll, so lighting software finds it by itself.';
+  const q = quantize(v.t0h, v.t1h, v.period), snap = (want, k) => (q ? Math.round(k * q.s / 1000) : want);
+  if (document.activeElement !== $('period_n')) $('period_n').value = v.period;
+  const s0 = snap(v.t0h, q && q.h0), s1 = snap(v.t1h, q && q.h1);
+  renderOutputs(v);
+  renderCalc(v, bad);
+  return bad;
+}
+
+function fillLed(c) {
+  show('lf', c.led_type != null);                                  // hidden on firmware without LED settings
+  show('tp', c.led_type != null);
+  if (c.led_type != null) tpShow();
+  ($('lt-' + c.led_type) || $('lt-rgbw')).checked = true;
+  ($('pr-' + c.protocol) || $('pr-artnet')).checked = true;
+  ($('mg-' + c.merge) || $('mg-htp')).checked = true;
+  $('interp').checked = !!c.interp;
+  $('dither').checked = !!c.dither;
+  $('loss').value = c.loss || 'hold';
+  $('loss_after').value = c.loss_after || 5;
+  const lc = c.loss_color || '00000000';
+  $('loss_rgb').value = '#' + lc.slice(0, 6);
+  $('loss_w').value = parseInt(lc.slice(6, 8), 16) || 0;
+  $('power_led').value = (c.power_led_mw || 300) / 1000;
+  $('led_volts').value = (c.led_volts_dv || 50) / 10;
+  $('power_out').value = (c.power_out_mw || 0) / 1000;
+  $('power_total').value = (c.power_total_mw || 0) / 1000;
+  $('order').value = c.order;
+  $('brightness').value = c.brightness;
+  (c.outputs || []).slice(0, 4).forEach((o, i) => {
+    $('o' + (i + 1) + '_leds').max = lim().max_leds;
+    $('o' + (i + 1) + '_offset').max = lim().max_leds;
+    $('o' + (i + 1) + '_leds').value = o.leds;
+    $('o' + (i + 1) + '_univ').value = o.univ;
+    $('o' + (i + 1) + '_type').value = o.type || '';
+    $('o' + (i + 1) + '_order').value = o.order || '';
+    $('o' + (i + 1) + '_rev').checked = !!o.rev;
+    $('o' + (i + 1) + '_group').value = o.group || 1;
+    $('o' + (i + 1) + '_offset').value = o.offset || 0;
+    $('o' + (i + 1) + '_start').value = o.start || 1;
+  });
+  $('oadv').open = (c.outputs || []).some(o => o.type || o.order || o.rev || (o.group || 1) > 1 || o.offset || (o.start || 1) > 1);
+  fit('period', c.period);
+  ['t0h', 't1h', 'period', 'latch'].forEach(k => { $(k).value = c[k]; });
+  fillShapes(c.period, c.t0h, c.t1h);
+  userPresets = Array.isArray(c.presets) ? c.presets : [];
+  fillPresets(presetKey(ledRead()));
+  renderLed();
+}
+
+function ledEvent(e) {
+  const id = e.target.id;
+  if (id === 'pre-save' || id === 'pre-del') return;
+  if (id === 'preset') {                                           // a preset fills bit time, shape and latch
+    const k = $('preset').value, b = PRESETS[k], u = k.startsWith('u') ? userPresets[+k.slice(1)] : null;
+    const p = u || (b && {t0h: b[0], t1h: b[1], period: b[2]});
+    if (p) {
+      fit('period', p.period);
+      $('period').value = p.period;
+      if (u) $('latch').value = u.latch;
+      fillShapes(p.period, p.t0h, p.t1h);
+    }
+    show('pre-del', k.startsWith('u'));
+  } else if (id === 'period_n') {                                  // typed speed: move the slider along
+    const p = num('period_n');
+    if (!within(p, 500, 3000)) { $('period_n').setAttribute('aria-invalid', 'true'); return; }
+    $('period_n').removeAttribute('aria-invalid');
+    fit('period', p);
+    $('period').value = p;
+    fillShapes(p, num('t0h'), num('t1h'));
+  } else if (id === 'period') {
+    fillShapes(num('period'), num('t0h'), num('t1h'));             // keep the shape as close as possible
+  } else if (id === 'shape') {
+    applyShape(num('period'));
+  }
+  if (['period', 'period_n', 'shape', 'latch'].includes(id)) fillPresets(presetKey(ledRead()));
+  renderLed();
+}
+$('lf').addEventListener('input', ledEvent);
+$('lf').addEventListener('change', ledEvent);
+
+$('lf').onsubmit = async e => {
+  e.preventDefault();
+  if (busy) return;
+  const bad = renderLed();
+  if (bad.length) {
+    msg('lmsg', 'err', 'Please check: ' + Array.from(new Set(bad.map(b => b[1]))).join(', ') + '.');
+    $(bad[0][0]).focus();
+    return;
+  }
+  const v = ledRead();
+  const body = {led_type: v.rgbw ? 'rgbw' : 'rgb', order: v.order, brightness: v.brightness, protocol: v.protocol, merge: v.merge,
+    interp: v.interp ? 1 : 0, dither: v.dither ? 1 : 0, loss: v.loss, loss_after: v.loss_after, loss_color: v.loss_color,
+    power_led_mw: v.power_led_mw, power_out_mw: v.power_out_mw, power_total_mw: v.power_total_mw,
+    led_volts_dv: v.led_volts_dv,
+    t0h: v.t0h, t1h: v.t1h, period: v.period, latch: v.latch};
+  v.outs.forEach((o, i) => {
+    const k = 'o' + (i + 1) + '_';
+    Object.assign(body, {[k + 'leds']: o.leds, [k + 'univ']: o.univ, [k + 'type']: o.type, [k + 'order']: o.order,
+      [k + 'rev']: o.rev ? 1 : 0, [k + 'group']: o.group, [k + 'offset']: o.offset, [k + 'start']: o.start});
+  });
+  setBusy(true); msg('lmsg', 'info', 'Saving…');
+  try {
+    const r = await postForm('/config', body);
+    if (r.ok) { msg('lmsg', 'ok', r.text || 'Saved.'); refill('lmsg', 'led'); }
+    else msg('lmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+  } catch (err) {
+    msg('lmsg', 'err', 'No reply from the board. Check the connection and try again.');
+  }
+  setBusy(false);
+};
+
+/* ---- Restart / update: count down while the board restarts, then open / ---- */
+async function waitBoard(say) {
+  for (let s = WAIT; s > 0; s--) { say(s, (WAIT - s) / WAIT * 100); await sleep(1000); }
+  location.href = '/';
+}
+function upload(f, onProgress, onSent, token) { // XHR for progress; queued like every request
+  return enqueue(() => new Promise((res, rej) => {
+    const x = new XMLHttpRequest();
+    x.open('POST', '/update');
+    x.setRequestHeader('X-Requested-With', 'xhr');
+    if (token) x.setRequestHeader('X-Update-Token', token);
+    x.setRequestHeader('Content-Type', 'application/octet-stream');
+    x.timeout = 180000;
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.upload.onload = onSent;
+    x.onload = () => res({ok: x.status >= 200 && x.status < 300, status: x.status, text: x.responseText});
+    x.onerror = x.ontimeout = () => rej(new Error('network'));
+    x.send(f);
+  }));
+}
+function phase(text, pct, pulse) {
+  show('bar', true);
+  $('bar').classList.toggle('busy', !!pulse);
+  $('bar').firstElementChild.style.width = pct + '%';
+  msg('umsg', 'info', text);
+}
+$('file').onchange = () => {
+  const f = $('file').files[0];
+  file = null; msg('umsg', '', '');
+  if (f && !/\.bin$/i.test(f.name)) msg('umsg', 'err', 'Please choose a firmware file ending in .bin.');
+  else file = f && f.size ? f : null;
+  $('fname').textContent = file ? file.name + ' · ' + fmtBytes(file.size) : 'Choose firmware .bin…';
+  enable();
+};
+$('go').onclick = async () => {
+  if (!file || busy) return;
+  let sent = false;
+  const restarting = t => waitBoard((s, p) => phase(t + ' ' + s + ' s', p));
+  setBusy(true); phase('Uploading… 0 %', 0);
+  try {
+    const r = await upload(file, p => phase('Uploading… ' + Math.round(p * 100) + ' %', p * 100),
+      () => { sent = true; phase('Verifying…', 100, true); });
+    if (r.ok) return await restarting('Restarting…');
+    msg('umsg', 'err', r.status === 401 ? AUTH : r.text || 'Update failed (' + r.status + ').');
+  } catch (err) {
+    if (sent) return await restarting('No reply, the board may be restarting. Status page in');
+    msg('umsg', 'err', 'Upload failed: connection lost. Nothing was installed, please try again.');
+  }
+  show('bar', false); setBusy(false);
+};
+
+/* ---- In-place update: through the updater, keeping the other slot ---- */
+$('go-ip').onclick = async () => {
+  if (!file || busy) return;
+  if (!confirm('Install ' + file.name + ' into the running slot? The other slot stays as it is; the running version is replaced for good (no rollback).')) return;
+  setBusy(true); phase('Starting the updater…', 0, true);
+  let token = null;
+  try {
+    const r = await postForm('/update-in-place', {});
+    if (!r.ok) { msg('umsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status); show('bar', false); setBusy(false); return; }
+    token = JSON.parse(r.text).token;
+  } catch (err) {
+    msg('umsg', 'err', 'No reply from the board. Nothing was changed.'); show('bar', false); setBusy(false); return;
+  }
+  // The board restarts into the updater (same address); it answers every GET.
+  let up = false;
+  for (let s = 0; s < 60 && !up; s++) {
+    await sleep(1000);
+    phase('Waiting for the updater… ' + s + ' s', 0, true);
+    try {
+      const r = await fetch('/api/status', {cache: 'no-store'});
+      up = !!(await r.json()).updater;
+    } catch (e) { /* still restarting */ }
+  }
+  if (!up) {
+    msg('umsg', 'err', 'The updater did not answer. Without an upload the board returns to the running firmware within 10 minutes.');
+    show('bar', false); setBusy(false); return;
+  }
+  let sent = false;
+  try {
+    const r = await upload(file, p => phase('Uploading to the updater… ' + Math.round(p * 100) + ' %', p * 100),
+      () => { sent = true; phase('Writing…', 100, true); }, token);
+    if (r.ok) return await waitBoard((s, p) => phase('Written. Starting the new firmware… ' + s + ' s', p));
+    msg('umsg', 'err', (r.text || 'Error ' + r.status) + ' The updater keeps waiting: retry with the same file.');
+  } catch (err) {
+    msg('umsg', 'err', 'Connection lost during the upload. The updater keeps waiting: reload this page and retry.');
+  }
+  show('bar', false); setBusy(false);
+};
+
+/* ---- Maintenance ---- */
+async function maint(path, onOk) {
+  if (busy) return;
+  setBusy(true); msg('mmsg', 'info', 'Please wait…');
+  try {
+    const r = await postForm(path);
+    if (r.ok) return await onOk(r.text);
+    msg('mmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+  } catch (err) {
+    if (path === '/restart') return await onOk(); // the connection dies when the board restarts
+    msg('mmsg', 'info', DROP);
+  }
+  setBusy(false);
+}
+$('restart').onclick = () => ask('Restart the board? Art-Net reception pauses for a few seconds.', 'Restart',
+  () => maint('/restart', t => waitBoard(s => msg('mmsg', 'info', (t || 'Restarting…') + ' Status page in ' + s + ' s.'))));
+$('reset').onclick = () => ask('Reset all settings? Name, password, network and Wi-Fi return to their defaults. This cannot be undone.', 'Reset settings',
+  () => maint('/reset', t => { msg('mmsg', 'ok', (t || 'Settings reset.') + ' On the setup Wi-Fi you may need to reconnect.'); setBusy(false); refill('mmsg'); }));
+let otName = 'the other firmware', otBack = '';
+$('ot-reset').onclick = () => ask('Reset ' + otName + ' to its factory defaults? Its settings are erased. At its next start it takes this firmware\'s LED setup and address again.', 'Reset ' + otName,
+  () => maint('/dualboot-reset', t => { msg('mmsg', 'ok', t || 'Reset.'); setBusy(false); }));
+
+/* ---- Diagnostics ---- */
+async function dbgShow(title, get) {
+  const out = $('dbg');
+  out.textContent = title + ' …'; show('dbg', true);
+  try { out.textContent = title + '\n\n' + await get(); }
+  catch (e) { out.textContent = title + ': ' + (e.status === 401 ? AUTH : 'no answer' + (e.status ? ' (HTTP ' + e.status + ')' : '')); }
+}
+const dbgJSON = path => dbgShow('GET ' + path, async () => JSON.stringify(await getJSON(path), null, 2));
+$('dbg-status').onclick = () => dbgJSON('/api/status');
+$('dbg-config').onclick = () => dbgJSON('/api/config');
+$('dbg-log').onclick = () => dbgShow('GET /api/dualboot-log', async () => {
+  const r = await enqueue(() => fetch('/api/dualboot-log', {headers: {'X-Requested-With': 'xhr'}}));
+  return (r.ok ? '' : 'HTTP ' + r.status + ': ') + await r.text();
+});
+async function dbgPost(path, question) {
+  if (!confirm(question)) return;
+  await dbgShow('POST ' + path, async () => {
+    try { const r = await postForm(path, {}); return (r.ok ? '' : 'HTTP ' + r.status + ': ') + (r.text || ''); }
+    catch (e) { return 'No reply (the board may be restarting).'; }
+  });
+}
+$('dbg-wifi').onclick = () => dbgPost('/debug/wifi', 'Start the setup Wi-Fi? It runs until the next restart and takes LED memory meanwhile.');
+$('dbg-bl').onclick = () => dbgPost('/install-bootloader', 'Write the bootloader built into this firmware? A power cut during the write (under a second) needs USB to recover.');
+$('dbg-panic').onclick = () => dbgPost('/debug/panic', 'Crash the firmware on purpose to test the crash log? The board restarts.');
+
+(async () => {
+  try {
+    fill(await getJSON('/api/config'));
+    show('body', true);
+  } catch (e) {
+    $('auth-t').textContent = e.status === 401 ? AUTH : 'Could not load the settings (' + (e.status ? 'HTTP ' + e.status : 'no answer from the board') + ').';
+    show('auth', true);
+  }
+})();
+
+/* ---- Test pattern ---- */
+async function tpShow() {
+  try {
+    const st = await getJSON('/api/status');
+    const t = st.test;
+    $('tp-p').textContent = t ? t.pattern + ' · off in ' + Math.ceil(t.off_in_s / 60) + ' min' : 'Off';
+    $('tp-p').className = 'pill' + (t ? ' warn' : '');
+    const l = st.led || {};
+    if (l.power_mw) {
+      const watts = l.power_mw.reduce((x, y) => x + y, 0) / 1000, volts = (l.volts_dv || 50) / 10;
+      $('pw-p').textContent = (l.power_limited ? 'Limiting · ' : '') + watts.toFixed(0) + ' W · ' + (watts / volts).toFixed(1) + ' A now';
+      $('pw-p').className = 'pill' + (l.power_limited ? ' warn' : ' ok');
+    }
+  } catch (e) { /* the next action shows any problem */ }
+}
+async function tpSend(pattern) {
+  const body = {pattern};
+  if (pattern === 'solid') { body.color = $('tp-c').value.slice(1); body.white = $('tp-w').value; }
+  try {
+    const r = await postForm('/test', body);
+    msg('tpmsg', r.ok ? 'ok' : 'err', r.ok ? r.text : (r.status === 401 ? AUTH : r.text || 'Error ' + r.status));
+  } catch (err) {
+    msg('tpmsg', 'err', 'No reply from the board. Check the connection and try again.');
+  }
+  tpShow();
+}
+document.querySelectorAll('[data-tp]').forEach(b => { b.onclick = () => tpSend(b.dataset.tp); });
+$('tp-w').oninput = () => { $('tp-wv').textContent = $('tp-w').value; };
+$('tp-c').onchange = () => { if (!$('tp-p').textContent.startsWith('Off')) tpSend('solid'); };
+$('tp-w').onchange = $('tp-c').onchange;
+
+/* ---- Backup / restore ---- */
+$('bk-get').onclick = async () => {
+  try {
+    const r = await enqueue(() => fetch('/api/backup', {headers: {'X-Requested-With': 'xhr'}}));
+    if (!r.ok) throw new Error(r.status === 401 ? AUTH : 'Error ' + r.status);
+    const name = (r.headers.get('Content-Disposition') || '').match(/filename="([^"]+)"/);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([await r.text()], {type: 'text/plain'}));
+    a.download = name ? name[1] : 'node-settings.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    msg('bkmsg', 'ok', 'Backup saved.');
+  } catch (err) {
+    msg('bkmsg', 'err', err.message || 'Download failed.');
+  }
+};
+$('bk-file').onchange = async () => {
+  const f = $('bk-file').files[0];
+  if (!f) return;
+  const fields = {};
+  new URLSearchParams((await f.text()).trim()).forEach((v, k) => { if (k !== 'password') fields[k] = v; });
+  if (!Object.keys(fields).length) { msg('bkmsg', 'err', 'This file holds no settings.'); return; }
+  msg('bkmsg', 'info', 'Restoring…');
+  try {
+    const r = await postForm('/config', fields);
+    if (r.ok) { msg('bkmsg', 'ok', 'Restored: ' + (r.text || 'saved') + ' Reload the page to see all values.'); }
+    else msg('bkmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+  } catch (err) {
+    msg('bkmsg', 'err', 'No reply from the board. If the network settings changed, open the board at its new address.');
+  }
+  $('bk-file').value = '';
+};
+
+/* ---- Firmware slots: what each holds, start the other one ---- */
+function slotName(x) {
+  const n = x.firmware || (x.kind === 'empty' ? 'Empty' : x.kind === 'changed' ? 'Being replaced by the upload' : 'Unknown');
+  return x.version ? n + ' ' + x.version : n;
+}
+async function slotsShow() {
+  try {
+    const c = await getJSON('/api/config');
+    const sl = c.slots || [];
+    const other = sl.find(x => !x.running);
+    if (c.other_firmware && other) {
+      otName = other.firmware || 'the other firmware';
+      otBack = c.other_back || '';
+      $('ot-h').textContent = otName + ' is installed in the other firmware slot. Start it with the Start button above or by clicking BOOT three times within 2 s (light turns white). To come back here, open its update page and upload this firmware (esp32-pixelcast .bin): it installs it into this slot and starts it.' + (otBack ? ' Or: ' + otBack + '.' : '');
+      $('ot-reset').textContent = 'Reset ' + otName;
+    }
+    show('ot-h', !!c.other_firmware);
+    const startable = !!other && (other.kind === 'this' || other.kind === 'other');
+    $('sl-h').textContent = other ? 'Install writes to ' + other.slot +
+      (startable ? ' and replaces ' + slotName(other) + '.' : '.') +
+      ' The running slot cannot be overwritten; slots are listed on the Status page.' : '';
+    show('sl-h', !!other);
+    const go = $('sl-go');
+    if (startable) {
+      go.textContent = 'Start ' + slotName(other);
+      go.disabled = !c.restart_allowed;
+      go.onclick = () => slotStart(other);
+    }
+    show('sl-go', startable);
+    show('ot-reset', !!c.other_reset);
+    $('dbg-h').textContent = 'For troubleshooting: raw data from the API, the other firmware\'s log, and actions to test things. Bootloader: ' +
+      ({bundled: 'the one built into this firmware', compatible: 'a compatible build', other: 'not ours or older (install it for in-place updates)'}[c.bootloader] || c.bootloader) + '.';
+    const ip = (c.bootloader === 'bundled' || c.bootloader === 'compatible') && c.layout === 'dualboot';
+    show('go-ip', ip); show('ip-h', ip);
+    if (c.in_place_note) { $('ip-h').textContent = 'Last in-place update: ' + c.in_place_note; show('ip-h', true); }
+  } catch (e) { /* stays hidden */ }
+}
+async function slotStart(x) {
+  const q = x.kind === 'other'
+    ? 'Restart into ' + slotName(x) + '? Coming back: its update page with this firmware\'s .bin' + (otBack ? ', or ' + otBack + '.' : '.')
+    : 'Start ' + slotName(x) + '? It stays (no trial). Coming back: its own Start button, or three BOOT clicks.';
+  if (!confirm(q)) return;
+  try {
+    const r = await postForm('/boot-other', {});
+    msg('umsg', r.ok ? 'ok' : 'err', r.ok ? (r.text || 'Starting.') + ' This page stops answering; the other firmware comes up at the same address after about 10 s.'
+      : (r.status === 401 ? AUTH : r.text || 'Error ' + r.status));
+  } catch (err) {
+    msg('umsg', 'err', 'No reply from the board.');
+  }
+}
+/* ---- Fast flash ---- */
+const FFL = {off: '', qio80: 'Active.', no_qe: 'Not possible: the flash chip is not set up for quad mode.',
+  verify_failed: 'Tried at start-up, but the read-back check failed: running at the normal speed.',
+  after_crash: 'Switched off after a crash while fast; a power cycle tries again.'};
+async function fflShow() {
+  try {
+    const [c, st] = await Promise.all([getJSON('/api/config'), getJSON('/api/status')]);
+    $('ffl').checked = !!c.fast_flash;
+    const f = st.flash && st.flash.fast;
+    flashFast = f === 'qio80';
+    ledMem = st.led && st.led.memory;
+    if (cfg) renderLed();
+    $('ffl-st').textContent = (FFL[f] || '') + (!!c.fast_flash !== (f === 'qio80') && f !== 'verify_failed' && f !== 'after_crash' && f !== 'no_qe' ? ' Restart to apply.' : '');
+  } catch (e) { /* leave as is */ }
+}
+$('ffl').onchange = async () => {
+  try {
+    const r = await postForm('/config', {fast_flash: $('ffl').checked ? 1 : 0});
+    msg('mmsg', r.ok ? 'ok' : 'err', r.ok ? 'Saved. Restart to apply.' : (r.status === 401 ? AUTH : r.text || 'Error ' + r.status));
+  } catch (err) { msg('mmsg', 'err', 'No reply from the board.'); }
+  fflShow();
+};
+fflShow();
+slotsShow();
+</script>
+</body>
+</html>

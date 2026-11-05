@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Thu, 5 Nov 2026 00:25:40 +0100
+Subject: [PATCH 6/6] Apply a static Ethernet address again when it did not
+ take
+
+A static Ethernet address that did not take (seen after a power-on, when
+the W5500 resets with the ESP32 and its link takes ~2 s: Ethernet stayed
+at 0.0.0.0 while the address sat on the Wi-Fi side) is applied again
+every 2 s while the link is up and Ethernet has none.
+---
+ wled00/pixelcast.cpp | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/wled00/pixelcast.cpp b/wled00/pixelcast.cpp
+index aa96922d..a0c8f717 100644
+--- a/wled00/pixelcast.cpp
++++ b/wled00/pixelcast.cpp
+@@ -14,6 +14,8 @@
+  *   (if it has one), its LED outputs and power limit, and the display on.
+  *   Everything else, live input (Art-Net, sACN) included, stays at WLED's
+  *   defaults. From then on WLED's own configuration rules.
++ * - A static Ethernet address that did not take at link-up (seen after a
++ *   power-on) is applied again.
+  */
+ #include "wled.h"
+ 
+@@ -226,6 +228,20 @@ void pxcwRequestBack() {
+ void pxcwLoop() {
+   pxcdLoop();
+ 
++#ifdef WLED_USE_ETHERNET
++  // A static Ethernet address is applied once, when the link comes up.
++  // After a power-on (the W5500 resets with the ESP32; its link takes ~2 s)
++  // that sometimes did not take: Ethernet stayed at 0.0.0.0 while the
++  // address sat on the Wi-Fi side. Apply it again while it is missing.
++  static unsigned long lastApply = 0;
++  if (multiWiFi.size() && multiWiFi[0].staticIP != IPAddress() && multiWiFi[0].staticGW != IPAddress() &&
++      ETH.linkUp() && ETH.localIP()[0] == 0 && millis() - lastApply > 2000) {
++    lastApply = millis();
++    ETH.config(multiWiFi[0].staticIP, multiWiFi[0].staticGW, multiWiFi[0].staticSN, dnsAddress);
++    pxcdf("eth: static address applied again, now %s", ETH.localIP().toString().c_str());
++  }
++#endif
++
+   if (pxcwBackRequested && (long)(millis() - pxcwBackAt) >= 0) pxcwBack("requested");
+ 
+   // BOOT (GPIO0) clicked three times within 2 s.
