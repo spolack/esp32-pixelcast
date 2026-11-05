@@ -26,8 +26,9 @@ icons or favicons (use inline SVG and `<link rel="icon" href="data:,">`).
   requests one after another (a small request queue in common.js), retry a
   failed GET once or twice after ~300 ms, and poll at most twice per second
   (exception: the audio meter polls `/api/audio` five times a second while
-  it is shown).
-- Responses are small; keep each page (after inlining) well under 30 KB.
+  the Audio tab is shown and audio is on).
+- Responses are small; keep each page (after inlining) well under 30 KB
+  gzipped.
 - No internet access: the board is often reached on its own Wi-Fi
   (192.168.4.1), also from Android's captive-portal "sign in" window (a
   stripped-down WebView). No CDNs, no web fonts, no external anything.
@@ -142,7 +143,8 @@ values are returned (0–32767; default 0).
 ### `GET /api/config` (login)
 ```json
 {"name": "", "default_name": "ArtnetNode-423C", "eth": "dhcp", "ip": "2.0.0.10", "prefix": 8,
- "gateway": "", "fallback": true, "ap_channel": 6, "ap_after": 10, "ap_boot": 0, "ap_idle": 5,
+ "gateway": "", "fallback": true, "fallback_ip": "", "fallback_prefix": 8,
+ "fallback_auto": "2.14.66.63", "ap_channel": 6, "ap_after": 10, "ap_boot": 0, "ap_idle": 5,
  "default_password": true, "ota_available": true, "restart_allowed": true,
  "other_firmware": true, "other_reset": true, "other_back": "POST /pixelcast there, or three BOOT clicks", "slots": [
    {"slot": "ota_0", "running": false, "next": false, "kind": "other", "firmware": "WLED", "version": "17.0.0-devV5 ESP32_W5500", "built": null},
@@ -164,8 +166,18 @@ Plus the LED settings:
 "interp": false, "dither": false, "fast_flash": false, "merge": "htp",
 "presets": [{"name": "SK6812 tuned", "period": 844, "t0h": 211, "t1h": 633, "latch": 100}], "loss": "hold", "loss_after": 5, "loss_color": "00000000",
 "power_led_mw": 300, "power_out_mw": 0, "power_total_mw": 0, "led_volts_dv": 50,
-"limits": {"max_leds": 4096, "max_samples_per_bit": 8, "max_sample_rate": 8000000}
+"limits": {"max_leds": 4096, "led_bytes": 16624, "led_bytes_wifi": 6384,
+ "max_samples_per_bit": 8, "max_sample_rate": 8000000},
+"audio": {"on": true, "mic": "i2s", "sel": "gnd", "din": 32, "ws": 15, "bclk": 33,
+ "mic_pending": false, "proto": "artnet", "dest": "2.14.66.250", "univ": 16, "prio": 100,
+ "agc": true, "gain": 0, "gate": -70, "attack": 10, "release": 100, "sens": 5,
+ "low_hz": 150, "high_hz": 2000, "range": 24, "ctl": false, "ctl_univ": 17, "ctl_addr": 1}
 ```
+- `fallback_ip` "" means 2.x.y.z from the MAC (`fallback_auto`, the address
+  it gives); `fallback_prefix` applies to a set `fallback_ip`.
+- `audio.univ` and `audio.ctl_univ` are port-addresses (sACN universe =
+  value + 1); `mic_pending`: the stored mic type or pins differ from the
+  ones the capture started with (they apply after a restart).
 - `name` "" means the default name (`default_name`), which is also the
   setup Wi-Fi name.
 - `restart_allowed` false while new firmware is unconfirmed (updates and
@@ -310,17 +322,22 @@ ctl_univ, ctl_addr}`.
   "fault|gated|active|clipping", "db": -42, "level": 0..65535, "peak",
   "beat", "phase", "beat_ms" (0: no tempo), "bands": [l, m, h], "onsets":
   [l, m, h], "activity": "silence|noise|music", "gain" (dB in effect for
-  level, low, mid, high: the AGC's, or the manual gain four times), "control" (the console's control channels count now),
-  "params": {agc, gain, gate, attack, release, sens, band_gain} (in effect,
-  with the console's overrides), "restarts", "overruns", "max_gap_us"}`, or
+  level, low, mid, high: the AGC's, or the manual gain four times),
+  "control" (true while the console's control channels are in effect),
+  "params": {agc, gain, gate, attack, release, sens, band_gain, range} (in
+  effect, with the console's overrides), "restarts", "overruns",
+  "send_dropped", "max_gap_us"}`, or
   `{"on": false}`. `level`, `bands`, `onsets` and `beat` are the peak since
   the previous request (a poller then sees the hits between its requests).
   `restarts`: times the capture restarted after its DMA stopped (no data
   for 20 ms; should stay 0). `overruns`: times the capture task came back
   after the ring (10.7 ms; PDM 21 ms) had filled; the capture then restarts
   (a gap of that length). One at start-up; otherwise only under heavy HTTP
-  load (e.g. 5 settings requests a second). `max_gap_us`: the longest the capture task was away since the
-  previous request.
+  load (e.g. 5 settings requests a second). `send_dropped`: audio frames
+  dropped because the audio socket's buffer was full: the destination does
+  not answer ARP (switched off, wrong address); after a second of that the
+  frames to it pause for 5 s. `max_gap_us`: the longest the capture task was
+  away since the previous request.
 - `POST /audio-beat` (login + `X-Requested-With`): sends one beat (channels
   4 and 9 for 80 ms), to check a console's mapping without music.
 
@@ -329,7 +346,9 @@ Control channels (console → node, `au_ctl=1`): 11 DMX channels from
 universe = it + 1), in the input protocol of the LED settings (Art-Net or
 sACN). They override the settings live; a channel at 0 keeps the settings
 page's value, and 2.5 s without data the settings apply again. The universe
-must not be an LED universe nor the audio universe.
+must not be an LED universe nor the audio universe (also refused when an
+ArtAddress would move an output onto it). Control packets do not count in
+the input statistics and do not keep the outputs from "signal lost".
 
 | Ch | Value (1–255) |
 |---|---|
@@ -347,7 +366,9 @@ Cost (measured, fast flash, alternating runs; table in README.md): 16
 universes at 170 fps stay at 0 % loss with audio on; 36-universe bursts at
 40 fps read 0.0–0.1 % with and 0 % without. Beyond the limits, at
 48-universe bursts, loss rises by about two percentage points (1.9 % to
-4.1–4.2 %).
+4.1–4.2 % in the same session; 1.2 % was the best without audio). Per
+packet 16.0 instead of 15.5 µs (`/api/status` `spi.proc_us` / `proc_n`
+over the run).
 
 ## Art-Net / sACN behaviour
 - ArtPoll → one ArtPollReply per group of up to four universes sharing
@@ -374,7 +395,7 @@ universes at 170 fps stay at 0 % loss with audio on; 36-universe bursts at
 
 ## Measured limits (firmware with fast flash, W5500 at 80 MHz)
 Unicast to the board's Ethernet address, rainbow pattern, 0 % loss over 12 s:
-- Art-Net: about 2700 packets/s with 16 universes (170 fps), 3000 with 4
+- Art-Net: 2720 packets/s with 16 universes (170 fps), 3000 with 4
   universes; first sequence gaps from about 2880.
 - sACN: about 2080 packets/s unicast (130 fps × 16); 0.1 % loss from 2400;
   multicast at 2400 still 0 %.
@@ -392,7 +413,7 @@ Unicast to the board's Ethernet address, rainbow pattern, 0 % loss over 12 s:
   empty it. The driver reads 4 KB chunks in the background while the frames
   already read are handled (Art-Net straight in the driver), and register
   accesses go through the SPI FIFO (~6 us instead of ~40 via esp-hal's DMA).
-  Delivered: 36 universes 100 %, 42 99.9 %, 48 98.8 % (20 and 40 fps). The
+  Delivered: 36 universes 100 %, 42 99.9 %, 48 98.1–98.8 % (20 and 40 fps). The
   settings page warns above 48.
 - Setup Wi-Fi started while 16 universes arrive at 72 fps: 0 % loss, one
   underrun at the start; it takes about 47 KB of heap.

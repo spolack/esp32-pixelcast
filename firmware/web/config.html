@@ -23,6 +23,9 @@
 .seg label{padding:7px 20px;border-radius:7px;color:var(--mu);font-size:14px;font-weight:600;cursor:pointer;
   transition:background-color .15s,color .15s}
 .seg input:checked+label{background:var(--ac);color:var(--ac-tx)}
+dialog{max-width:420px;padding:18px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--tx)}
+dialog::backdrop{background:#0008}
+dialog .in{margin-top:10px}
 .chk{display:flex;gap:10px;cursor:pointer;font-size:14px}
 .chk input{flex:none;width:18px;height:18px;margin:1px 0 0}
 .msg,.note{padding:10px 12px;border-radius:10px;font-size:14px;overflow-wrap:anywhere}
@@ -120,7 +123,7 @@ select.in{padding-right:8px}
 
   <section class="card">
     <h2><i class="ic" data-i="zap"></i>Ethernet</h2>
-    <div class="seg">
+    <div class="seg" role="radiogroup" aria-label="Ethernet address">
       <input class="sr" type="radio" name="eth" id="eth-dhcp" value="dhcp"><label for="eth-dhcp">DHCP</label>
       <input class="sr" type="radio" name="eth" id="eth-static" value="static"><label for="eth-static">Static</label>
     </div>
@@ -339,7 +342,7 @@ select.in{padding-right:8px}
 <form id="af" class="grid" novalidate autocomplete="off" hidden>
   <section class="card">
     <h2><i class="ic" data-i="pulse"></i>Audio <span id="au-p" class="pill">Off</span></h2>
-    <p class="hint">The microphone as a DMX source: level, beat and three bands as one universe, about 44 times a second, for a console or software to use (channel map in docs/api.md). Nothing here changes the LED outputs.</p>
+    <p class="hint">The microphone as a DMX source: level, beat and three bands as one universe, about 44 times a second, for a console or software to use (channel map: docs/api.md in the project's source). Nothing here changes the LED outputs.</p>
     <label class="chk"><input type="checkbox" id="au_on"><span>Send the audio universe</span></label>
     <div class="fl" id="au-pr-l" style="margin-top:14px">Protocol</div>
     <div class="seg" role="radiogroup" aria-labelledby="au-pr-l">
@@ -421,7 +424,7 @@ select.in{padding-right:8px}
       <div><span class="sub">Activity</span><b id="au-act">—</b></div>
       <div><span class="sub" id="au-gain-l">Gain</span><b id="au-gain">—</b></div>
     </div>
-    <div class="aum">
+    <div class="aum" aria-hidden="true">
       <span>Level</span><div class="bar"><i id="au-lv"></i></div>
       <span>Low</span><div class="bar"><i id="au-b0"></i></div>
       <span>Mid</span><div class="bar"><i id="au-b1"></i></div>
@@ -455,15 +458,12 @@ select.in{padding-right:8px}
   <section class="card">
     <h2><i class="ic" data-i="power"></i>Maintenance</h2>
     <div id="n-rst" class="note warn" hidden></div>
-    <div id="acts" class="acts">
+    <div class="acts">
       <button id="restart" class="btn" type="button" disabled>Restart</button>
       <button id="sl-go" class="btn" type="button" hidden></button>
       <button id="reset" class="btn dng" type="button" disabled>Reset settings</button>
       <button id="ot-reset" class="btn dng" type="button" hidden></button>
     </div>
-    <div id="ask" class="note warn" hidden><p id="ask-t"></p>
-      <div class="acts"><button id="ask-no" class="btn" type="button">Cancel</button>
-        <button id="ask-yes" class="btn dng" type="button"></button></div></div>
     <label class="chk" style="margin-top:12px"><input type="checkbox" id="ffl"><span>Fast flash (QIO 80 MHz): more headroom for the network core. Applies after a restart. <span id="ffl-st" class="sub"></span></span></label>
     <p class="hint">BOOT button on the board: click for the next test pattern (rainbow, chase, blackout, off). Click three times within 2 s (light turns white) to start the other firmware slot. Hold 3 s (light turns blue) for the setup Wi-Fi. Hold 10 s (light blinks red) to reset the password and network settings to defaults (DHCP); the name and LED settings stay.</p>
     <p id="ot-h" class="hint" hidden></p>
@@ -497,17 +497,22 @@ select.in{padding-right:8px}
 </div>
 </main>
 <script><!--COMMON_JS--></script>
+<dialog id="dlg"><form method="dialog"><p id="dlg-t"></p>
+  <input class="in" id="dlg-in" maxlength="24" autocomplete="off" aria-labelledby="dlg-t" hidden>
+  <div class="acts"><button id="dlg-no" class="btn" type="button">Cancel</button><button id="dlg-ok" class="btn pri" value="ok"></button></div></form></dialog>
 <script>
 'use strict';
 const {$, getJSON, postForm, enqueue, sleep, setName, fmtBytes, fmtPort} = AN;
 AN.init();
 
 const AUTH = 'Login missing or changed: reload this page and the browser will ask for it again (user “admin”). Android’s “sign in” window cannot log in; use your normal browser.';
+// The message for a failed request: the board's text, or why there is none.
+const errText = r => (r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
 const HOLD = 'The new firmware is still on trial: updates and restarts are paused. Try again in a minute.';
 const DROP = 'No reply from the board. On the setup Wi-Fi that is expected after changing name, password or channel: reconnect (to the new name/password) and reload.';
 const IP = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$/;
 const WAIT = 20; // seconds the board needs to restart
-let cfg = null, busy = false, file = null;
+let cfg = null, busy = false, file = null, orderW = null;
 
 const val = id => $(id).value.trim();
 const int = (id, lo, hi) => /^\d+$/.test(val(id)) && +val(id) >= lo && +val(id) <= hi;
@@ -517,15 +522,20 @@ function msg(id, kind, text) { const e = $(id); e.hidden = !kind; e.className = 
 // These changes disconnect devices on the setup Wi-Fi.
 const drops = () => !!cfg && (val('name') !== cfg.name || $('password').value !== '' || +val('ap_channel') !== cfg.ap_channel);
 
-// Inline confirm: window.confirm() is silently suppressed in captive-portal WebViews.
-let todo = null;
-const unask = () => { show('ask', false); show('acts', true); };
-function ask(text, label, fn) {
-  $('ask-t').textContent = text; $('ask-yes').textContent = label;
-  todo = fn; show('acts', false); show('ask', true); $('ask-no').focus();
+// Our own confirm and prompt: window.confirm() and prompt() are silently
+// suppressed in captive-portal WebViews. Resolves to true, or the text typed
+// with `input`; null on Cancel.
+function dialog(text, label, input, danger) {
+  const d = $('dlg'), i = $('dlg-in');
+  $('dlg-t').textContent = text; $('dlg-ok').textContent = label; $('dlg-ok').className = danger ? 'btn dng' : 'btn pri';
+  i.hidden = !input; i.value = ''; d.returnValue = '';
+  return new Promise(res => {
+    d.onclose = () => res(d.returnValue !== 'ok' ? null : input ? i.value : true);
+    d.showModal(); (input ? i : $('dlg-no')).focus();
+  });
 }
-$('ask-no').onclick = unask;
-$('ask-yes').onclick = () => { unask(); todo(); };
+$('dlg-no').onclick = () => $('dlg').close('');
+const ask = async (text, label, fn) => { if (await dialog(text, label, false, true)) fn(); };
 
 /* ---- Settings: state -> UI ---- */
 function enable() {
@@ -552,12 +562,12 @@ function sync(e) {
   if (e && e.target.removeAttribute) e.target.removeAttribute('aria-invalid');
 }
 
-// part: 'dev' = only the device/network form, 'led' = only the LED form, none = both.
-// After a save only that form is refilled, so unsaved edits in the other one survive.
+// part: 'dev', 'led' or 'audio' = only that form, none = all.
+// After a save only that form is refilled, so unsaved edits in the others survive.
 function fill(c, part) {
   cfg = c;
   setName(c.name || c.default_name);
-  if (part !== 'led') {
+  if (!part || part === 'dev') {
     $('name').value = c.name; $('name').placeholder = c.default_name;
     $('password').value = $('password2').value = '';
     ($('eth-' + c.eth) || $('eth-dhcp')).checked = true;
@@ -570,7 +580,7 @@ function fill(c, part) {
   }
   if (part !== 'dev' && part !== 'audio') fillLed(c);
   wifiNote(c);
-  if (part !== 'dev' && part !== 'led') fillAudio(c);
+  if (part !== 'dev' && part !== 'led') fillAudio(c); else audioSync();   // labels follow the LED protocol
   show('b-pw', c.default_password);
   const nu = !c.ota_available ? 'Over-the-air updates are not available on this device.' : !c.restart_allowed ? HOLD : '';
   $('n-upd').textContent = nu; show('n-upd', nu);
@@ -581,6 +591,24 @@ function fill(c, part) {
 const refill = (id, part) => getJSON('/api/config').then(c => fill(c, part), e => { if (e.status === 401) $(id).textContent += ' ' + AUTH; });
 
 /* ---- Save ---- */
+// Posts one form's fields; on success refills only that form (`part`, see
+// fill). `drop`: the change disconnects the setup Wi-Fi, so no reply is
+// expected; `pwNote`: the password changed (no refill: the login is stale).
+async function save(id, part, body, drop, pwNote) {
+  setBusy(true); msg(id, 'info', 'Saving…');
+  try {
+    const r = await postForm('/config', body);
+    if (!r.ok) msg(id, 'err', errText(r));
+    else {
+      if (part === 'dev') $('password').value = $('password2').value = '';
+      msg(id, 'ok', (r.text || 'Saved.') + (pwNote || ''));
+      if (!pwNote) refill(id, part);
+    }
+  } catch (err) {
+    msg(id, drop ? 'info' : 'err', drop ? DROP : 'No reply from the board. Check the connection and try again.');
+  }
+  setBusy(false);
+}
 function validate() {
   const bad = [];
   const chk = (id, ok, what) => { if (!ok) { bad.push(what); $(id).setAttribute('aria-invalid', 'true'); } };
@@ -590,7 +618,7 @@ function validate() {
     chk('ip', IP.test(val('ip')), 'IP address');
     chk('prefix', int('prefix', 1, 30), 'prefix 1–30');
     chk('gateway', !val('gateway') || IP.test(val('gateway')), 'gateway');
-  } else if ($('fallback').checked && val('fallback_ip')) {
+  } else if (val('fallback_ip')) {                               // sent with DHCP even if unticked
     chk('fallback_ip', IP.test(val('fallback_ip')), 'fallback address');
     chk('fallback_prefix', int('fallback_prefix', 1, 30), 'fallback prefix 1–30');
   }
@@ -614,21 +642,9 @@ $('f').onsubmit = async e => {
   if (dhcp ? $('fallback').checked : cfg.fallback) body.fallback = '1';
   body.fallback_ip = dhcp ? val('fallback_ip') : cfg.fallback_ip;
   body.fallback_prefix = dhcp && val('fallback_ip') ? val('fallback_prefix') : cfg.fallback_prefix;
-  setBusy(true); msg('msg', 'info', 'Saving…');
-  try {
-    const r = await postForm('/config', body);
-    if (r.ok) {
-      const pw = $('password').value !== '';
-      $('password').value = $('password2').value = '';
-      // After a password change the browser's cached login is stale: the next request would 401.
-      if (pw) msg('msg', 'ok', (r.text || 'Saved.') + ' Password changed: reload this page and sign in with the new password.');
-      else { msg('msg', 'ok', r.text || 'Saved.'); refill('msg', 'dev'); }
-    }
-    else msg('msg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
-  } catch (err) {
-    msg('msg', drop ? 'info' : 'err', drop ? DROP : 'No reply from the board. Check the connection and try again.');
-  }
-  setBusy(false);
+  // After a password change the browser's cached login is stale: the next request would 401.
+  const pw = $('password').value !== '';
+  save('msg', 'dev', body, drop, pw && ' Password changed: reload this page and sign in with the new password.');
 };
 $('f').addEventListener('input', sync);
 $('f').addEventListener('change', sync);
@@ -891,8 +907,6 @@ function renderStab() {
   show('stab', why.length > 0);
 }
 
-// Auto pulses: a quarter and a half of the bit time (the datasheet's 300/600 of 1200 ns).
-
 // Pulse shapes the output sends exactly at this bit time: [h0, h1, n], pulses of h0 and h1 of n samples
 // (the same choices as quantize()), within the accepted pulse ranges, each ratio once.
 function shapes(period) {
@@ -952,16 +966,16 @@ const presetStr = list => list.map(p => [p.name, p.period, p.t0h, p.t1h, p.latch
 async function savePresets(list, sel) {
   try {
     const r = await postForm('/config', {presets: presetStr(list)});
-    if (!r.ok) return msg('lmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+    if (!r.ok) return msg('lmsg', 'err', errText(r));
     userPresets = list;
     fillPresets(sel);
     msg('lmsg', 'ok', 'Presets saved on the board.');
   } catch (e) { msg('lmsg', 'err', 'No reply from the board.'); }
 }
-$('pre-save').onclick = () => {
+$('pre-save').onclick = async () => {
   const v = ledRead();
   if (renderLed().some(b => ['t0h', 't1h', 'period', 'latch'].includes(b[0]))) return msg('lmsg', 'err', 'Fix the timing first.');
-  const name = (prompt('Name for this preset (up to 24 characters):', '') || '').trim();
+  const name = ((await dialog('Name for this preset (up to 24 characters):', 'Save', true)) || '').trim();
   if (!name) return;
   if (name.length > 24 || /[|;"\\]/.test(name) || /[^\x20-\x7e]/.test(name)) return msg('lmsg', 'err', 'Use up to 24 plain characters, without | ; " or \\.');
   const list = userPresets.filter(p => p.name !== name);
@@ -969,9 +983,9 @@ $('pre-save').onclick = () => {
   list.push({name, period: v.period, t0h: v.t0h, t1h: v.t1h, latch: v.latch});
   savePresets(list, 'u' + (list.length - 1));
 };
-$('pre-del').onclick = () => {
+$('pre-del').onclick = async () => {
   const i = +$('preset').value.slice(1), p = userPresets[i];
-  if (!p || !confirm('Delete the preset "' + p.name + '"?')) return;
+  if (!p || !await dialog('Delete the preset "' + p.name + '"?', 'Delete')) return;
   savePresets(userPresets.filter((_, k) => k !== i), 'custom');
 };
 const fit = (id, x) => { const e = $(id); if (x < +e.min) e.min = x; if (x > +e.max) e.max = x; }; // keep loaded values on the slider
@@ -1005,7 +1019,7 @@ function renderLed() {
   const v = ledRead(), bad = ledCheck(v);
   $('lf').querySelectorAll('[aria-invalid]').forEach(i => i.removeAttribute('aria-invalid'));
   bad.forEach(b => $(b[0]).setAttribute('aria-invalid', 'true'));
-  Array.from($('order').options).forEach(o => { o.textContent = o.value.toUpperCase() + (v.rgbw ? '(W)' : ''); });
+  if (v.rgbw !== orderW) { orderW = v.rgbw; Array.from($('order').options).forEach(o => { o.textContent = o.value.toUpperCase() + (v.rgbw ? '(W)' : ''); }); }
   $('bv').textContent = v.brightness + ' %';
   show('lossc', v.loss === 'color');
   $('loss_wv').textContent = $('loss_w').value;
@@ -1020,9 +1034,7 @@ function renderLed() {
   $('pr-h').textContent = v.protocol === 'sacn'
     ? 'sACN (E1.31) on UDP 5568, multicast and unicast. sACN numbers universes from 1: sACN universe 1 feeds "First universe" 0 below. With several sources, the highest priority wins.'
     : 'Art-Net on UDP 6454. The node answers ArtPoll, so lighting software finds it by itself.';
-  const q = quantize(v.t0h, v.t1h, v.period), snap = (want, k) => (q ? Math.round(k * q.s / 1000) : want);
   if (document.activeElement !== $('period_n')) $('period_n').value = v.period;
-  const s0 = snap(v.t0h, q && q.h0), s1 = snap(v.t1h, q && q.h1);
   renderOutputs(v);
   renderCalc(v, bad);
   return bad;
@@ -1120,15 +1132,7 @@ $('lf').onsubmit = async e => {
     Object.assign(body, {[k + 'leds']: o.leds, [k + 'univ']: o.univ, [k + 'type']: o.type, [k + 'order']: o.order,
       [k + 'rev']: o.rev ? 1 : 0, [k + 'group']: o.group, [k + 'offset']: o.offset, [k + 'start']: o.start});
   });
-  setBusy(true); msg('lmsg', 'info', 'Saving…');
-  try {
-    const r = await postForm('/config', body);
-    if (r.ok) { msg('lmsg', 'ok', r.text || 'Saved.'); refill('lmsg', 'led'); }
-    else msg('lmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
-  } catch (err) {
-    msg('lmsg', 'err', 'No reply from the board. Check the connection and try again.');
-  }
-  setBusy(false);
+  save('lmsg', 'led', body);
 };
 
 /* ---- Audio ---- */
@@ -1142,7 +1146,7 @@ function fillAudio(c) {
   show('au-pend', !!a.mic_pending);
   ($('au-' + a.proto) || $('au-artnet')).checked = true;
   $('au_dest').value = a.dest;
-  $('au_univ').value = a.proto === 'sacn' ? a.univ + 1 : a.univ;
+  $('au_univ').value = a.proto === 'sacn' ? a.univ + 1 : a.univ; auNum = a.proto;
   $('au_prio').value = a.prio;
   $('au_agc').checked = a.agc;
   $('au_gain').value = a.gain; $('au_gate').value = a.gate;
@@ -1150,11 +1154,19 @@ function fillAudio(c) {
   $('au_sens').value = a.sens;
   $('au_low').value = a.low_hz; $('au_high').value = a.high_hz; $('au_range').value = a.range;
   $('au_ctl').checked = a.ctl;
-  $('au_ctl_univ').value = c.protocol === 'sacn' ? a.ctl_univ + 1 : a.ctl_univ;
+  $('au_ctl_univ').value = c.protocol === 'sacn' ? a.ctl_univ + 1 : a.ctl_univ; ctlNum = c.protocol;
+  document.querySelectorAll('#af [aria-invalid]').forEach(e => e.removeAttribute('aria-invalid'));
+  if (!a.on) { $('au-p').textContent = 'Off'; $('au-p').className = 'pill'; }
   $('au_ctl_addr').value = a.ctl_addr;
   audioSync();
 }
 const auProto = () => ($('au-sacn').checked ? 'sacn' : 'artnet');
+// The numbering each universe field shows now (sACN counts from 1): a
+// protocol change converts the value instead of reinterpreting it.
+let auNum = 'artnet', ctlNum = 'artnet';
+function renumber(id, from, to) {
+  if (from !== to && /^\d+$/.test(val(id))) $(id).value = +val(id) + (to === 'sacn' ? 1 : -1);
+}
 // The board's free GPIOs; 34–39 are inputs only (data line).
 const MIC_PINS = [2, 13, 15, 32, 33, 34, 35, 36, 39], MIC_OUT = [2, 13, 15, 32, 33];
 [['au_din', MIC_PINS], ['au_ws', MIC_OUT], ['au_bclk', MIC_OUT]].forEach(([id, pins]) =>
@@ -1167,6 +1179,8 @@ function audioSync() {
   show('au-ctl-f', $('au_ctl').checked);
   // The control channels come in the input protocol (LED strip settings).
   const inSacn = !!cfg && cfg.protocol === 'sacn';
+  renumber('au_univ', auNum, auProto()); auNum = auProto();
+  renumber('au_ctl_univ', ctlNum, inSacn ? 'sacn' : 'artnet'); ctlNum = inSacn ? 'sacn' : 'artnet';
   $('au-ctl-univ-l').textContent = inSacn ? 'sACN universe (input protocol)' : 'Art-Net universe (input protocol)';
   $('au-univ-l').textContent = sacn ? 'sACN universe (1–32768)' : 'Art-Net universe (port-address)';
   $('au_univ').min = sacn ? 1 : 0; $('au_univ').max = sacn ? 32768 : 32767;
@@ -1190,20 +1204,23 @@ $('af').onsubmit = async e => {
   e.preventDefault();
   if (busy) return;
   const sacn = auProto() === 'sacn';
+  document.querySelectorAll('#af [aria-invalid]').forEach(e => e.removeAttribute('aria-invalid'));
   const checks = [['au_univ', sacn ? 1 : 0, sacn ? 32768 : 32767, 'universe'], ['au_prio', 1, 200, 'priority'],
     ['au_gate', -90, -20, 'noise gate'], ['au_attack', 1, 500, 'attack'], ['au_release', 10, 3000, 'release'],
     ['au_low', 40, 500, 'low/mid crossover'], ['au_high', 1000, 8000, 'mid/high crossover'], ['au_range', 12, 48, 'range']];
   if (!$('au_agc').checked) checks.push(['au_gain', -20, 40, 'gain']);
+  // A field to fix may be in a card hidden while audio is off: show it.
+  const reveal = id => { show('au-mic-c', true); show('au-an-c', true); show('au-ctl-f', $('au_ctl').checked); $(id).focus(); };
   const bad = checks.filter(([id, lo, hi]) => !/^-?\d+$/.test(val(id)) || +val(id) < lo || +val(id) > hi);
   if (val('au_dest') && !IP.test(val('au_dest'))) bad.push(['au_dest', 0, 0, 'destination IP']);
   bad.forEach(([id]) => $(id).setAttribute('aria-invalid', 'true'));
-  if (bad.length) { msg('amsg', 'err', 'Please check: ' + bad.map(b => b[3]).join(', ') + '.'); $(bad[0][0]).focus(); return; }
+  if (bad.length) { msg('amsg', 'err', 'Please check: ' + bad.map(b => b[3]).join(', ') + '.'); reveal(bad[0][0]); return; }
   const used = [$('au_din').value, $('au_ws').value].concat($('au_mic').value === 'pdm' ? [] : [$('au_bclk').value]);
-  if (new Set(used).size !== used.length) { msg('amsg', 'err', 'The mic pins must be different.'); $('au_din').focus(); return; }
+  if (new Set(used).size !== used.length) { msg('amsg', 'err', 'The mic pins must be different.'); reveal('au_din'); return; }
   const inSacn = !!cfg && cfg.protocol === 'sacn';
   if ($('au_ctl').checked && !(/^\d+$/.test(val('au_ctl_univ')) && +val('au_ctl_univ') >= (inSacn ? 1 : 0) && +val('au_ctl_univ') <= (inSacn ? 32768 : 32767)))
-    { msg('amsg', 'err', 'Please check: control universe.'); $('au_ctl_univ').focus(); return; }
-  if ($('au_ctl').checked && !int('au_ctl_addr', 1, 502)) { msg('amsg', 'err', 'Please check: control start address (1–502).'); $('au_ctl_addr').focus(); return; }
+    { msg('amsg', 'err', 'Please check: control universe.'); reveal('au_ctl_univ'); return; }
+  if ($('au_ctl').checked && !int('au_ctl_addr', 1, 502)) { msg('amsg', 'err', 'Please check: control start address (1–502).'); reveal('au_ctl_addr'); return; }
   const body = {au_mic: $('au_mic').value, au_sel: $('au_sel').value, au_din: $('au_din').value, au_ws: $('au_ws').value,
     au_bclk: $('au_bclk').value, au_proto: auProto(), au_dest: val('au_dest'), au_univ: +val('au_univ') - (sacn ? 1 : 0), au_prio: val('au_prio'),
     au_gate: val('au_gate'), au_attack: val('au_attack'), au_release: val('au_release'), au_sens: $('au_sens').value,
@@ -1211,25 +1228,19 @@ $('af').onsubmit = async e => {
   if ($('au_on').checked) body.au_on = 1;
   if ($('au_ctl').checked) Object.assign(body, {au_ctl: 1, au_ctl_univ: +val('au_ctl_univ') - (inSacn ? 1 : 0), au_ctl_addr: val('au_ctl_addr')});
   if ($('au_agc').checked) body.au_agc = 1; else body.au_gain = val('au_gain');
-  setBusy(true); msg('amsg', 'info', 'Saving…');
-  try {
-    const r = await postForm('/config', body);
-    if (r.ok) { msg('amsg', 'ok', r.text || 'Saved.'); refill('amsg', 'audio'); }
-    else msg('amsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
-  } catch (err) {
-    msg('amsg', 'err', 'No reply from the board. Check the connection and try again.');
-  }
-  setBusy(false);
+  save('amsg', 'audio', body);
 };
 $('au-beat').onclick = async () => {
-  try { const r = await postForm('/audio-beat', {}); if (!r.ok) msg('amsg', 'err', r.status === 401 ? AUTH : r.text); }
+  try { const r = await postForm('/audio-beat', {}); if (!r.ok) msg('amsg', 'err', errText(r)); }
   catch (e) { msg('amsg', 'err', 'No reply from the board.'); }
 };
-// The live meter: 5 times a second while audio is on and the page is visible.
-let auPending = false;
+// The live meter: 5 times a second while the Audio tab is shown, audio is on
+// and the page is visible (each poll is a request the board answers).
+let auPending = false, curTab = '';
 const pct = v => Math.round(Math.min(100, Math.max(0, v))) + '%';
 async function audioPoll() {
-  if (auPending || document.hidden || !cfg || !cfg.audio || !cfg.audio.on) { show('au-live', false); return; }
+  if (auPending) return;
+  if (document.hidden || curTab !== 'audio' || !cfg || !cfg.audio || !cfg.audio.on || !$('au_on').checked) { show('au-live', false); return; }
   auPending = true;
   try {
     const a = await getJSON('/api/audio');
@@ -1309,12 +1320,12 @@ $('go').onclick = async () => {
 /* ---- In-place update: through the updater, keeping the other slot ---- */
 $('go-ip').onclick = async () => {
   if (!file || busy) return;
-  if (!confirm('Install ' + file.name + ' into the running slot? The other slot stays as it is; the running version is replaced for good (no rollback).')) return;
+  if (!await dialog('Install ' + file.name + ' into the running slot? The other slot stays as it is; the running version is replaced for good (no rollback).', 'Install')) return;
   setBusy(true); phase('Starting the updater…', 0, true);
   let token = null;
   try {
     const r = await postForm('/update-in-place', {});
-    if (!r.ok) { msg('umsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status); show('bar', false); setBusy(false); return; }
+    if (!r.ok) { msg('umsg', 'err', errText(r)); show('bar', false); setBusy(false); return; }
     token = JSON.parse(r.text).token;
   } catch (err) {
     msg('umsg', 'err', 'No reply from the board. Nothing was changed.'); show('bar', false); setBusy(false); return;
@@ -1352,7 +1363,7 @@ async function maint(path, onOk) {
   try {
     const r = await postForm(path);
     if (r.ok) return await onOk(r.text);
-    msg('mmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+    msg('mmsg', 'err', errText(r));
   } catch (err) {
     if (path === '/restart') return await onOk(); // the connection dies when the board restarts
     msg('mmsg', 'info', DROP);
@@ -1382,7 +1393,7 @@ $('dbg-log').onclick = () => dbgShow('GET /api/dualboot-log', async () => {
   return (r.ok ? '' : 'HTTP ' + r.status + ': ') + await r.text();
 });
 async function dbgPost(path, question) {
-  if (!confirm(question)) return;
+  if (!await dialog(question, 'Send')) return;
   await dbgShow('POST ' + path, async () => {
     try { const r = await postForm(path, {}); return (r.ok ? '' : 'HTTP ' + r.status + ': ') + (r.text || ''); }
     catch (e) { return 'No reply (the board may be restarting).'; }
@@ -1397,11 +1408,23 @@ function tab(name) {
   const tabs = Array.from(document.querySelectorAll('.tabs button')).filter(b => !b.hidden);
   if (!tabs.some(b => b.dataset.tab === name)) name = tabs[0].dataset.tab;
   tabs.forEach(b => b.setAttribute('aria-selected', b.dataset.tab === name));
+  curTab = name;
   document.querySelectorAll('.tab').forEach(t => { t.hidden = t.dataset.tab !== name; });
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'led' && !$('lf').hidden) renderLed();               // sizes need the visible tab
 }
-document.querySelectorAll('.tabs button').forEach(b => { b.onclick = () => tab(b.dataset.tab); });
+document.querySelectorAll('.tab').forEach(t => { t.id = 'p-' + t.dataset.tab; t.setAttribute('role', 'tabpanel'); });
+document.querySelectorAll('.tabs button').forEach(b => {
+  b.setAttribute('aria-controls', 'p-' + b.dataset.tab);
+  b.onclick = () => tab(b.dataset.tab);
+  b.onkeydown = e => {                                               // arrow keys move between tabs
+    const d = {ArrowRight: 1, ArrowLeft: -1}[e.key];
+    if (!d) return;
+    const tabs = Array.from(document.querySelectorAll('.tabs button')).filter(x => !x.hidden);
+    const n = tabs[(tabs.indexOf(b) + d + tabs.length) % tabs.length];
+    tab(n.dataset.tab); n.focus(); e.preventDefault();
+  };
+});
 addEventListener('hashchange', () => tab(location.hash.slice(1)));
 
 (async () => {
@@ -1437,7 +1460,7 @@ async function tpSend(pattern) {
   if (pattern === 'solid') { body.color = $('tp-c').value.slice(1); body.white = $('tp-w').value; }
   try {
     const r = await postForm('/test', body);
-    msg('tpmsg', r.ok ? 'ok' : 'err', r.ok ? r.text : (r.status === 401 ? AUTH : r.text || 'Error ' + r.status));
+    msg('tpmsg', r.ok ? 'ok' : 'err', r.ok ? r.text : (errText(r)));
   } catch (err) {
     msg('tpmsg', 'err', 'No reply from the board. Check the connection and try again.');
   }
@@ -1474,7 +1497,7 @@ $('bk-file').onchange = async () => {
   try {
     const r = await postForm('/config', fields);
     if (r.ok) { msg('bkmsg', 'ok', 'Restored: ' + (r.text || 'saved') + ' Reload the page to see all values.'); }
-    else msg('bkmsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+    else msg('bkmsg', 'err', errText(r));
   } catch (err) {
     msg('bkmsg', 'err', 'No reply from the board. If the network settings changed, open the board at its new address.');
   }
@@ -1522,11 +1545,11 @@ async function slotStart(x) {
   const q = x.kind === 'other'
     ? 'Restart into ' + slotName(x) + '? Coming back: its update page with this firmware\'s .bin' + (otBack ? ', or ' + otBack + '.' : '.')
     : 'Start ' + slotName(x) + '? It stays (no trial). Coming back: its own Start button, or three BOOT clicks.';
-  if (!confirm(q)) return;
+  if (!await dialog(q, 'Start')) return;
   try {
     const r = await postForm('/boot-other', {});
     msg('umsg', r.ok ? 'ok' : 'err', r.ok ? (r.text || 'Starting.') + ' This page stops answering; the other firmware comes up at the same address after about 10 s.'
-      : (r.status === 401 ? AUTH : r.text || 'Error ' + r.status));
+      : (errText(r)));
   } catch (err) {
     msg('umsg', 'err', 'No reply from the board.');
   }
@@ -1549,7 +1572,7 @@ async function fflShow() {
 $('ffl').onchange = async () => {
   try {
     const r = await postForm('/config', {fast_flash: $('ffl').checked ? 1 : 0});
-    msg('mmsg', r.ok ? 'ok' : 'err', r.ok ? 'Saved. Restart to apply.' : (r.status === 401 ? AUTH : r.text || 'Error ' + r.status));
+    msg('mmsg', r.ok ? 'ok' : 'err', r.ok ? 'Saved. Restart to apply.' : (errText(r)));
   } catch (err) { msg('mmsg', 'err', 'No reply from the board.'); }
   fflShow();
 };

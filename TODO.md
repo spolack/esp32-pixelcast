@@ -11,12 +11,14 @@
   update, blue with only the setup Wi-Fi, blinking red without any network.
 
 ## To investigate
-- Bursts: 48 universes back to back arrive at ~99 % (36 at 100 %). The remaining
+- Bursts: 48 universes back to back arrive at 98.1–98.8 % (36 at 100 %). The remaining
   loss: 80 MHz SPI (~10 MB/s) cannot keep up with 100 Mbit/s (12.2 MB/s) for long.
   Left: 2 register accesses per chunk for the release, 4 KB chunks (DMA buffer).
   Diagnostics: status spi (fifo, fifo_stuck, bulk_stuck, backlog_max).
-- Main stack: measured peak ~19.5 KB of 27.7 KB (`stack_free_min`); the link
-  check is 24 KB. Spare RAM for new static buffers comes from there.
+- Main stack: 24 952 bytes, of which the linker check requires 24 576; the
+  deepest use measured leaves ~3.9 KB free (`stack_free_min`). New static
+  buffers come out of it, so there is almost no room left: use the heap
+  (~15 KB free) for buffers allocated once.
 - Async SPI (esp-hal 1.2.2, tried and reverted): short transfers through the FIFO cost
   ~25 us instead of ~34-46, but some DMA writes (130 bytes, also when padded to 132)
   never complete; with a 3 ms time limit and a blocking retry it worked, yet bursts
@@ -61,15 +63,15 @@
 - Fixture profiles for the audio universe and the control channels (GDTF
   for grandMA3, MagicQ, QLC+).
 - Settings page: band gains (now only from the control channels).
-- BPM and tempo confidence on channels 15–16; band edges adjustable.
+- BPM and tempo confidence on channels 15–16.
 - Advertise the audio universe as an input port in ArtPollReply.
 - Audio capture: under heavy HTTP load (5 settings requests a second) the
   network core sometimes keeps the capture task away up to ~11 ms, a little
-  longer than the 10.7 ms ring: an overrun, under 1 ms of audio lost (none
-  with the settings page's meter polling). Also: the "available" interrupt
-  does not always wake the task (a 3 ms timeout covers it). A larger ring
-  needs RAM: the main stack is at 24 816 of the 24 576 bytes it must keep
-  (measured peak use leaves ~3.9 KB free).
+  longer than the 10.7 ms ring: an overrun (none with the settings page's
+  meter polling); a settings save does the same (flash write). Each overrun
+  restarts the capture, a gap of ~11 ms in the audio. Also: the "available"
+  interrupt does not always wake the task (a 3 ms timeout covers it). A
+  larger ring needs RAM (see Main stack above).
   Knobs: the receive task's buffers (`rx.rs`), the two heap regions
   (`main.rs`), the LED pool (`ledout.rs`, reclaimed RAM, 2.5 KB left there).
 - Mics: PDM and I2S with MCLK are built but untested on hardware (no such

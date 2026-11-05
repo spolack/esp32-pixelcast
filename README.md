@@ -16,7 +16,7 @@ details in [`docs/api.md`](docs/api.md).
 
 | Input | Rate | Loss |
 |---|---|---|
-| Art-Net, 16 universes | 2700 packets/s (170 fps) | 0 % |
+| Art-Net, 16 universes | 2720 packets/s (170 fps) | 0 % |
 | Art-Net, 4 universes | 3000 packets/s | 0 % |
 | sACN, 16 universes | 2080 packets/s (130 fps) | 0 % |
 | sACN multicast | 2400 packets/s | 0 % |
@@ -38,8 +38,8 @@ With the microphone on (audio universe sent 44 times a second; measured
 | Burst, 48 universes at 40 fps | 1.9 % | 4.1–4.2 % |
 
 Up to 36 universes the microphone costs nothing measurable; at 48-universe
-bursts it adds about 2 percentage points of loss (per packet 16.0 instead
-of 15.5 µs).
+bursts it adds about 2 percentage points of loss (handling a packet takes
+16.0 instead of 15.5 µs, from `/api/status` `spi.proc_us` / `proc_n`).
 
 | Output | |
 |---|---|
@@ -85,9 +85,10 @@ on a trusted network.
 ## Features
 
 - Art-Net 4 and sACN: ArtPoll, ArtSync, HTP/LTP merge of two sources.
-- LED timing presets. Per output: LED count, start universe, colour order,
-  brightness, dithering, interpolation, power limit (per output and total,
-  in watts), behaviour on signal loss.
+- LED timing presets. Per output: LED count, start universe, LED type,
+  colour order, reverse, grouping, offset, start channel, power limit in
+  watts. For all outputs: brightness, dithering, interpolation, total power
+  limit, behaviour on signal loss.
 - Web interface with login, live view, settings backup; JSON API
   ([`docs/api.md`](docs/api.md)).
 - DHCP with Art-Net 2.x.y.z fallback, or static; mDNS; setup Wi-Fi access
