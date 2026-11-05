@@ -39,6 +39,9 @@ jobs:
     container: espressif/idf:v6.1
     steps:
       - uses: actions/checkout@v7
+      # The checkout belongs to the runner user, the container runs as root:
+      # git refuses the repository ("dubious ownership") without this.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: tools/build.sh bootloader
         shell: bash
       - uses: actions/upload-artifact@v7
