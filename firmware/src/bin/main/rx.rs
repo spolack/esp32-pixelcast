@@ -270,8 +270,8 @@ pub(crate) async fn artnet_task(
                     // buffer faster than they are handled here.
                     embassy_futures::yield_now().await;
                 }
+                // Longer than the buffer: not a packet this node takes.
                 Either3::Second(Err(embassy_net::udp::RecvError::Truncated)) => {}
-                Either3::Second(Err(e)) => warn!("receive: error: {:?}", e),
                 Either3::Third(()) => {}
             }
             if let Some((to, at)) = repeat_poll
@@ -424,6 +424,12 @@ pub(crate) static ETH_MAC: [core::sync::atomic::AtomicU8; 6] = [const { core::sy
 #[esp_hal::ram]
 pub(crate) fn handle_packet(packet: Option<&artnet::Packet<'_>>, src: Option<[u8; 4]>) {
     let start = Instant::now();
+    // The audio control channels: they feed nothing else.
+    if let Some(artnet::Packet::Dmx { universe, data, .. }) = packet
+        && esp32_pixelcast::audio::on_dmx(*universe, data)
+    {
+        return;
+    }
     // Only LED data counts as activity (signal loss, status LED, DHCP retry,
     // ArtPollReply): not polls, ArtAddress or ignored sACN sources.
     if matches!(packet, Some(artnet::Packet::Dmx { .. } | artnet::Packet::Sync)) {
@@ -499,6 +505,13 @@ pub(crate) fn sacn_groups() -> Groups {
                 // Past the limit the rest is not joined (unicast still works).
                 let _ = g.push(addr);
             }
+        }
+    }
+    // The audio control channels arrive in the input protocol too.
+    if s.audio.on && s.audio.control {
+        let addr = sacn::multicast_group(s.audio.control_universe + 1);
+        if !g.contains(&addr) {
+            let _ = g.push(addr);
         }
     }
     g

@@ -26,7 +26,7 @@ use esp_hal::{
     time::Rate,
 };
 use log::{info, warn};
-use pixelcast_core::audio::{self as an, Analyzer, Snapshot, Status};
+use pixelcast_core::audio::{self as an, Analyzer, CONTROL_CHANNELS, Snapshot, Status};
 
 use crate::settings::{self, MIC_PINS, MicType};
 
@@ -94,20 +94,84 @@ fn ring() -> Option<DmaRxStreamBuf> {
 
 /// The latest snapshot, for `/api/audio`; `None` while audio is off.
 static LAST: Mutex<CriticalSectionRawMutex, Cell<Option<Snapshot>>> = Mutex::new(Cell::new(None));
-/// Restarts after the ring ran full (the task came too late, e.g. during a
-/// flash write or a burst of Art-Net: the DMA then stops), for `/api/audio`.
+/// Restarts of the capture after the DMA stopped (the ring ran full, or no
+/// data for 8 ms: it sometimes stops during network traffic), for
+/// `/api/audio`.
 static RESTARTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn restarts() -> u32 {
     RESTARTS.load(Ordering::Relaxed)
 }
 
+/// The longest the task was away between two wake-ups (µs), since the last
+/// call: what the DMA ring has to bridge.
+static MAX_GAP_US: AtomicU32 = AtomicU32::new(0);
+
+pub fn take_max_gap_us() -> u32 {
+    MAX_GAP_US.swap(0, Ordering::Relaxed)
+}
+
+/// Where the control channels are: `universe << 16 | DMX address`, or
+/// `u32::MAX` while control is off. Set by the audio task, read by the
+/// receive path for every DMX packet.
+static CONTROL_AT: AtomicU32 = AtomicU32::new(u32::MAX);
+/// Control channels and when they came (uptime ms).
+type Received = Option<(u32, [u8; CONTROL_CHANNELS])>;
+/// The latest control channels.
+static CONTROL: Mutex<CriticalSectionRawMutex, Cell<Received>> = Mutex::new(Cell::new(None));
+/// Control channels older than this no longer count (the console stopped):
+/// the settings page's values apply again.
+const CONTROL_TIMEOUT_MS: u32 = 2500;
+
+/// For the receive path: if `universe` carries the control channels,
+/// takes them and returns true (the universe then feeds nothing else).
+pub fn on_dmx(universe: u16, data: &[u8]) -> bool {
+    let at = CONTROL_AT.load(Ordering::Relaxed);
+    if at == u32::MAX || (at >> 16) as u16 != universe {
+        return false;
+    }
+    let first = (at & 0xffff) as usize - 1;
+    let mut c = [0u8; CONTROL_CHANNELS];
+    for (k, v) in c.iter_mut().enumerate() {
+        *v = data.get(first + k).copied().unwrap_or(0);
+    }
+    CONTROL.lock(|cell| cell.set(Some((Instant::now().as_millis() as u32, c))));
+    true
+}
+
+/// The control channels, if fresh.
+fn control() -> Option<[u8; CONTROL_CHANNELS]> {
+    let (at, c) = CONTROL.lock(Cell::get)?;
+    ((Instant::now().as_millis() as u32).wrapping_sub(at) < CONTROL_TIMEOUT_MS).then_some(c)
+}
+
+/// The console is controlling the analysis now, for `/api/audio`.
+pub fn controlled() -> bool {
+    control().is_some()
+}
+
+/// The parameters in effect (settings with the console's overrides).
+static EFFECTIVE: Mutex<CriticalSectionRawMutex, Cell<Option<an::Params>>> = Mutex::new(Cell::new(None));
+
+pub fn effective() -> Option<an::Params> {
+    EFFECTIVE.lock(Cell::get)
+}
+
 /// Uptime ms until which the beat channel is forced on ("simulate beat").
 static SIMULATE_UNTIL: AtomicU32 = AtomicU32::new(0);
 
+/// The latest snapshot with level, bands, onsets and beat as their peak
+/// since the previous call (the web page polls slower than the frames come).
 pub fn snapshot() -> Option<Snapshot> {
-    LAST.lock(Cell::get)
+    let peak = PEAK.lock(|c| c.replace(None));
+    LAST.lock(Cell::get).map(|s| match peak {
+        Some(p) => Snapshot { level: p.level, bands: p.bands, onsets: p.onsets, beat: p.beat, ..s },
+        None => s,
+    })
 }
+
+/// Peaks since the last `snapshot()` call.
+static PEAK: Mutex<CriticalSectionRawMutex, Cell<Option<Snapshot>>> = Mutex::new(Cell::new(None));
 
 
 /// Sends a beat (pulse and onsets) for 80 ms, to test a console's mapping.
@@ -149,12 +213,40 @@ pub async fn run(pins: Mic) -> ! {
     let (mut acc, mut n_acc) = (0i32, 0u32);
     // The last read found the ring full: the DMA has stopped.
     let mut overflow = false;
+    // Freeze holds this; the tap channel's last state (edges are taps).
+    let mut held = Snapshot::empty(Status::Gated);
+    let mut tapped = false;
+    let mut woke = Instant::now();
+    let mut more = false;
     loop {
-        // A timeout only means nothing new: `got` stays 0 then.
-        if !overflow {
-            let _ = with_timeout(Duration::from_millis(20), transfer.wait_for_available_async()).await;
+        // Woken by the DMA, at the latest after 3 ms (a chunk takes ~2.7 ms;
+        // the interrupt alone does not always wake the task).
+        // `peek` gives the contiguous part only (up to the ring's end): with
+        // more waiting, go on at once.
+        if !overflow && !more {
+            let _ = with_timeout(Duration::from_millis(3), transfer.wait_for_available_async()).await;
         }
+        let gap = woke.elapsed().as_micros() as u32;
+        MAX_GAP_US.fetch_max(gap, Ordering::Relaxed);
+        woke = Instant::now();
         let audio = settings::with(|s| s.audio);
+        CONTROL_AT.store(
+            if audio.on && audio.control {
+                (u32::from(audio.control_universe) << 16) | u32::from(audio.control_address)
+            } else {
+                u32::MAX
+            },
+            Ordering::Relaxed,
+        );
+        let (params, ctl) = match control() {
+            Some(c) => an::apply_control(&audio.params, &c),
+            None => (audio.params, an::Control::default()),
+        };
+        EFFECTIVE.lock(|c| c.set(Some(params)));
+        if ctl.tap && !tapped {
+            analyzer.tap();
+        }
+        tapped = ctl.tap;
         // Whole samples, processed in place in the ring.
         let available = transfer.peek().len();
         let got = available - available % width;
@@ -165,10 +257,10 @@ pub async fn run(pins: Mic) -> ! {
             LAST.lock(|c| c.set(None));
             continue;
         }
-        if got == 0 && (overflow || last_data.elapsed() >= Duration::from_millis(20)) {
-            // The ring ran full and the DMA stopped (or nothing came for
-            // 20 ms): start it again. The audio has a gap of the time the
-            // task was away.
+        // A stall: the ring ran full, or nothing came for 8 ms (three
+        // chunks; the DMA sometimes stops during network traffic).
+        if got == 0 && (overflow || last_data.elapsed() >= Duration::from_millis(8)) {
+            // Start it again: the audio has a gap of a few ms.
             overflow = false;
             let (rx, buf) = transfer.stop();
             let (d, b) = buf.split();
@@ -179,6 +271,8 @@ pub async fn run(pins: Mic) -> ! {
             };
             transfer = t;
             RESTARTS.fetch_add(1, Ordering::Relaxed);
+            // Give the restarted DMA its first chunk before judging again.
+            last_data = Instant::now();
         }
         if got == 0 {
             // No samples for half a second: the mic or its clock is gone.
@@ -206,13 +300,19 @@ pub async fn run(pins: Mic) -> ! {
             if n_acc == DECIMATE {
                 let x = acc / DECIMATE as i32;
                 (acc, n_acc) = (0, 0);
-                if let Some(s) = analyzer.push(x, &audio.params) {
-                    publish(&mut sequence, s);
+                if let Some(s) = analyzer.push(x, &params) {
+                    if !ctl.freeze {
+                        held = s;
+                    }
+                    // Freeze holds the values; status and input level stay
+                    // live (a mic fault still shows).
+                    publish(&mut sequence, Snapshot { status: s.status, input_db: s.input_db, gain_db: s.gain_db, ..held });
                 }
             }
         }
         transfer.consume(got);
         overflow = full;
+        more = transfer.available_bytes() >= width;
     }
 }
 
@@ -269,6 +369,18 @@ fn publish(sequence: &mut u8, mut s: Snapshot) {
         s.onsets[0] = true;
     }
     LAST.lock(|c| c.set(Some(s)));
+    PEAK.lock(|c| {
+        c.set(Some(match c.get() {
+            None => s,
+            Some(p) => Snapshot {
+                level: p.level.max(s.level),
+                bands: core::array::from_fn(|k| p.bands[k].max(s.bands[k])),
+                onsets: core::array::from_fn(|k| p.onsets[k] | s.onsets[k]),
+                beat: p.beat | s.beat,
+                ..s
+            },
+        }))
+    });
     // Art-Net: 1..=255 (0 means "no sequencing"); sACN takes the same.
     *sequence = sequence.wrapping_add(1).max(1);
     TX.signal(Frame { channels: an::encode(&s), sequence: *sequence });

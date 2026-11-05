@@ -57,7 +57,7 @@ when putting them into HTML (use textContent).
 - `firmware.slots`: both app slots, as in `/api/config` below (`next`: this
   slot boots at the next start).
 - `ethernet.present` false = no Ethernet module; `address` may be null;
-  `source` is `"DHCP"`, `"static"` or `"Art-Net fallback"` (or "").
+  `source` is `"DHCP"`, `"static"` or `"fallback"` (or "").
 - `wifi.on` false = setup Wi-Fi off (then ssid/reason/address are "").
 - `artnet.network`: `"eth"`, `"wifi"` or `""` (none yet). Rates are per second
   over the last `window_ms`.
@@ -192,7 +192,9 @@ to reload the page (the browser then asks for the login again).
 - `POST /config`, body `application/x-www-form-urlencoded`: `name`,
   `password`, `password2` (empty password = keep), `eth` (`dhcp`|`static`),
   `ip`, `prefix` (1–30), `gateway` (may be empty), `fallback` (send `1` when
-  enabled, omit when not; "omitted = off" only applies when `eth` is sent too), `ap_channel` (1–13), `ap_after` (5–3600 s), `ap_boot` (0–1440 min: the
+  enabled, omit when not; "omitted = off" only applies when `eth` is sent too), `fallback_ip`
+  (the address used when DHCP gets no answer; empty = Art-Net's 2.x.y.z/8
+  from the MAC), `fallback_prefix` (1–30, with `fallback_ip`), `ap_channel` (1–13), `ap_after` (5–3600 s), `ap_boot` (0–1440 min: the
   setup Wi-Fi runs this long after every start, 0 = no), `ap_idle` (1–240
   min: that start-up window ends only after this long without a web
   request over the setup Wi-Fi). While the setup Wi-Fi runs, and until the
@@ -256,11 +258,18 @@ after a restart (`/api/config` `audio.mic_pending` until then); everything
 else applies at once. Not supported: codecs that need an I2C setup (ES7243,
 ES8388, WM8978) and analog mics.
 
-Analysis: level (attack/release), three bands (low < 150 Hz, mid, high
-> 2 kHz), onsets per band, beat from the low band (60–200 BPM) with a phase
-ramp, activity, clipping and mic faults. With AGC each value follows its
-own recent peak (falls 6 dB/s, 30 dB window); without, a 48 dB window
-below 0 dBFS after the gain. Below the noise gate all values are 0.
+Analysis: level (attack/release), three bands (low up to `au_low`, default
+150 Hz; high above `au_high`, default 2 kHz; 12 dB/octave), onsets per
+band, beat from the low band (60–200 BPM) with a phase ramp, activity,
+clipping and mic faults. The bands rise within 2 ms (each hit shows) and
+fall at the release. Values are shown in a window of `au_range` (12–48 dB,
+default 24) below 0 dBFS after the gain. The AGC is a slow gain stage per value (level and each band, so
+a quiet high band uses its range too): it follows the value's average over
+about 10 s and sets its gain (−20 to +40 dB) so the average sits at 60 %
+of the range; peaks go above it. It holds while the input is below
+the gate and while it is 20 dB below its average (decays, breaks), unless
+that lasts 5 s. Without AGC the gain is `au_gain`. The noise gate compares
+the input before any gain; below it all values are 0.
 
 Channel map (channels 1–16; 17–512 are 0):
 
@@ -289,27 +298,53 @@ restart), `au_on` (send `1` when on), `au_proto`
 (`artnet`|`sacn`), `au_dest` (IP or empty), `au_univ` (0–32767), `au_prio`
 (1–200), `au_agc` (send `1` when on), `au_gain` (−20–40 dB, without AGC),
 `au_gate` (−90 to −20 dBFS), `au_attack` (1–500 ms), `au_release`
-(10–3000 ms), `au_sens` (beat sensitivity 1–10). A form with `au_univ` but
-without `au_on`/`au_agc` turns those off. `/api/config` returns them as
+(10–3000 ms), `au_sens` (beat sensitivity 1–10), `au_low` (40–500 Hz),
+`au_high` (1000–8000 Hz), `au_range` (12–48 dB), `au_ctl` (send `1` when
+on), `au_ctl_univ`, `au_ctl_addr` (control channels, below). A form with
+`au_univ` but without `au_on`/`au_agc`/`au_ctl` turns those off. `/api/config` returns them as
 `audio: {on, mic, sel, din, ws, bclk, mic_pending, proto, dest, univ,
-prio, agc, gain, gate, attack, release, sens}`.
+prio, agc, gain, gate, attack, release, sens, low_hz, high_hz, range, ctl,
+ctl_univ, ctl_addr}`.
 
 - `GET /api/audio` (public): `{"on": true, "status":
   "fault|gated|active|clipping", "db": -42, "level": 0..65535, "peak",
   "beat", "phase", "beat_ms" (0: no tempo), "bands": [l, m, h], "onsets":
-  [l, m, h], "activity": "silence|noise|music", "restarts"}`, or
-  `{"on": false}`. `restarts`: times the capture restarted after the task
-  came too late (the audio then has a gap of a few ms; about once every
-  two seconds under full Art-Net load).
+  [l, m, h], "activity": "silence|noise|music", "gain" (dB in effect for
+  level, low, mid, high: the AGC's, or the manual gain four times), "control" (the console's control channels count now),
+  "params": {agc, gain, gate, attack, release, sens, band_gain} (in effect,
+  with the console's overrides), "restarts", "max_gap_us"}`, or
+  `{"on": false}`. `level`, `bands`, `onsets` and `beat` are the peak since
+  the previous request (a poller then sees the hits between its requests).
+  `restarts`: times the capture restarted after its DMA stopped (each a gap
+  of about 8 ms in the audio); about one every two seconds at rest and
+  roughly one per HTTP request to the board. `max_gap_us`: the longest the
+  capture task was away since the previous request (the ring holds 10.7 ms).
 - `POST /audio-beat` (login + `X-Requested-With`): sends one beat (channels
   4 and 9 for 80 ms), to check a console's mapping without music.
+
+Control channels (console → node, `au_ctl=1`): 11 DMX channels from
+`au_ctl_addr` (1–502) in universe `au_ctl_univ` (a port-address; sACN
+universe = it + 1), in the input protocol of the LED settings (Art-Net or
+sACN). They override the settings live; a channel at 0 keeps the settings
+page's value, and 2.5 s without data the settings apply again. The universe
+must not be an LED universe nor the audio universe.
+
+| Ch | Value (1–255) |
+|---|---|
+| 1 | AGC: 1–127 off, 128–255 on |
+| 2 | gain without AGC: −20 to +40 dB |
+| 3 | noise gate: −90 to −20 dBFS |
+| 4 | attack: 1–500 ms |
+| 5 | release: 10–3000 ms |
+| 6 | beat sensitivity: 1–10 |
+| 7–9 | gain low, mid, high: × value / 128 (128 = ×1, 255 ≈ ×2) |
+| 10 | freeze: > 127 holds the output values |
+| 11 | tap: each rise through 128 is a beat (the tempo follows the taps) |
 
 Cost (measured, fast flash, alternating runs): 16 universes at 170 fps
 stay at 0 % loss with audio on; 36-universe bursts read 0.0–0.2 % with and
 0.1–0.3 % without. Beyond the limits, at 48-universe bursts, loss rises by
-about one percentage point (3.3–4.0 % to 4.4–5.0 %). Under full load the
-capture restarts about once every two seconds (a gap of a few ms in the
-audio).
+about one percentage point (3.3–4.0 % to 4.4–5.0 %).
 
 ## Art-Net / sACN behaviour
 - ArtPoll → one ArtPollReply per group of up to four universes sharing

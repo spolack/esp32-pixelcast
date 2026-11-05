@@ -1016,6 +1016,7 @@ fn api_audio() -> String {
                 .field("beat", s.beat)
                 .field("phase", s.phase)
                 .field("beat_ms", s.beat_ms)
+                .field("gain", s.gain_db)
                 .field("bands", s.bands)
                 .field("onsets", s.onsets)
                 .field("activity", match s.activity {
@@ -1023,7 +1024,21 @@ fn api_audio() -> String {
                     Activity::Noise => "noise",
                     Activity::Music => "music",
                 })
-                .field("restarts", crate::audio::restarts());
+                .field("restarts", crate::audio::restarts())
+                .field("max_gap_us", crate::audio::take_max_gap_us())
+                .field("control", crate::audio::controlled());
+            if let Some(p) = crate::audio::effective() {
+                o.obj("params", |q| {
+                    q.field("agc", p.agc)
+                        .field("gain", p.gain_db)
+                        .field("gate", p.gate_db)
+                        .field("attack", p.attack_ms)
+                        .field("release", p.release_ms)
+                        .field("sens", p.sensitivity)
+                        .field("range", p.range_db)
+                        .field("band_gain", p.band_gain);
+                });
+            }
         }
     })
 }
@@ -1215,6 +1230,12 @@ fn api_config(ctx: &WebCtx) -> String {
             .field("prefix", s.prefix)
             .field("gateway", s.gateway.map(|g| alloc::string::ToString::to_string(&g)).unwrap_or_default())
             .field("fallback", s.artnet_fallback)
+            .field("fallback_ip", s.fallback_ip.map(|a| alloc::string::ToString::to_string(&a)).unwrap_or_default())
+            .field("fallback_prefix", s.fallback_prefix)
+            .field("fallback_auto", {
+                let m = crate::board::eth_mac();
+                alloc::format!("{}.{}.{}.{}", 2, m[3], m[4], m[5].clamp(1, 254))
+            })
             .field("ap_channel", s.ap_channel)
             .field("ap_after", s.ap_after_s)
             .field("ap_boot", s.ap_boot_min)
@@ -1281,7 +1302,13 @@ fn api_config(ctx: &WebCtx) -> String {
                     .field("gate", a.params.gate_db)
                     .field("attack", a.params.attack_ms)
                     .field("release", a.params.release_ms)
-                    .field("sens", a.params.sensitivity);
+                    .field("sens", a.params.sensitivity)
+                    .field("low_hz", a.params.low_hz)
+                    .field("high_hz", a.params.high_hz)
+                    .field("range", a.params.range_db)
+                    .field("ctl", a.control)
+                    .field("ctl_univ", a.control_universe)
+                    .field("ctl_addr", a.control_address);
             })
             .field("merge", s.merge.key())
             .arr("presets", |a| {

@@ -38,12 +38,65 @@ pub struct Params {
     pub release_ms: u16,
     /// Onset and beat sensitivity, 1 (only strong hits) ..= 10.
     pub sensitivity: u8,
+    /// Per band (low, mid, high): output × this / 128 (128 = ×1). Only the
+    /// control channels set it.
+    pub band_gain: [u8; 3],
+    /// Crossovers: low/mid (40..=500 Hz) and mid/high (1000..=8000 Hz).
+    pub low_hz: u16,
+    pub high_hz: u16,
+    /// The window the values are shown in, dB below the top (12..=48): the
+    /// smaller, the more each hit swings a value.
+    pub range_db: u8,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Params { agc: true, gain_db: 0, gate_db: -70, attack_ms: 10, release_ms: 300, sensitivity: 5 }
+        Params { agc: true, gain_db: 0, gate_db: -70, attack_ms: 10, release_ms: 100, sensitivity: 5, band_gain: [128; 3], low_hz: 150, high_hz: 2000, range_db: 24 }
     }
+}
+
+/// Channels of the control fixture (console → node, docs/api.md).
+pub const CONTROL_CHANNELS: usize = 11;
+
+/// What the control channels ask for besides parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Control {
+    /// Hold the output values.
+    pub freeze: bool,
+    /// The tap channel is up (a beat on each rising edge).
+    pub tap: bool,
+}
+
+/// `p` with the control channels' overrides: a channel at 0 keeps the
+/// settings page's value.
+pub fn apply_control(p: &Params, c: &[u8; CONTROL_CHANNELS]) -> (Params, Control) {
+    let mut q = *p;
+    // 1..=255 onto lo..=hi.
+    let span = |v: u8, lo: i32, hi: i32| lo + (i32::from(v) - 1) * (hi - lo) / 254;
+    if c[0] != 0 {
+        q.agc = c[0] >= 128;
+    }
+    if c[1] != 0 {
+        q.gain_db = span(c[1], -20, 40) as i8;
+    }
+    if c[2] != 0 {
+        q.gate_db = span(c[2], -90, -20) as i8;
+    }
+    if c[3] != 0 {
+        q.attack_ms = span(c[3], 1, 500) as u16;
+    }
+    if c[4] != 0 {
+        q.release_ms = span(c[4], 10, 3000) as u16;
+    }
+    if c[5] != 0 {
+        q.sensitivity = span(c[5], 1, 10) as u8;
+    }
+    for k in 0..3 {
+        if c[6 + k] != 0 {
+            q.band_gain[k] = c[6 + k];
+        }
+    }
+    (q, Control { freeze: c[9] >= 128, tap: c[10] >= 128 })
 }
 
 /// What the room sounds like.
@@ -89,6 +142,9 @@ pub struct Snapshot {
     pub input_db: i16,
     /// Beat period in ms (0: none yet), for the web page.
     pub beat_ms: u16,
+    /// The gains in effect, dB (the AGC's, or the manual one): level, low,
+    /// mid, high.
+    pub gain_db: [i8; 4],
     pub status: Status,
 }
 
@@ -105,6 +161,7 @@ impl Snapshot {
             activity: Activity::Silence,
             input_db: -120,
             beat_ms: 0,
+            gain_db: [0; 4],
             status,
         }
     }
@@ -135,6 +192,18 @@ pub fn encode(s: &Snapshot) -> [u8; CHANNELS] {
         Status::Clipping => 255,
     };
     c
+}
+
+/// One-pole low-pass coefficient (Q16) for a cut-off of `hz`:
+/// 1 - e^(-2π·hz/RATE), with e^-w as (1 - w/256)^256.
+pub fn coef_hz(hz: u32) -> i64 {
+    // w = 2π · hz / RATE in Q32 (2π · 2^32 = 26 986 075 409).
+    let w = 26_986_075_409i64 * i64::from(hz) / i64::from(RATE);
+    let mut e = i128::from((1i64 << 32) - (w >> 8));
+    for _ in 0..8 {
+        e = e * e >> 32; // squaring in Q32 (only when a crossover changes)
+    }
+    ((((1i128 << 32) - e) >> 16) as i64).clamp(1, 65535)
 }
 
 /// One-pole filter coefficient (Q16) for a time constant of `ms`.
@@ -187,15 +256,47 @@ fn window(x: Db, top: Db, range: Db) -> u32 {
     (((x - (top - range)).clamp(0, range) as i64 * 65535) / i64::from(range)) as u32
 }
 
-/// Recent peak in dB: jumps up, falls 6 dB/s, never below `floor`.
-#[derive(Debug, Clone, Copy)]
-struct Agc(Db);
+// Values are shown in a window of `Params::range_db` below 0 dBFS, after the
+// gain; the AGC puts the average at 60 % of it (40 % of the range below the
+// top), so peaks have that much headroom.
+/// The AGC's range, as the manual gain's.
+const AGC_MIN: Db = -20 * DB;
+const AGC_MAX: Db = 40 * DB;
+/// Per block (4 ms): ~10 s time constant (65536 · 4 ms / 10 s ≈ 26).
+const AGC_K: i64 = 26;
 
-impl Agc {
-    fn step(&mut self, x: Db, floor: Db) -> Db {
-        // Per block (4 ms): 6 dB/s.
-        self.0 = (self.0 - 6 * DB * BLOCK as i32 / RATE as i32).max(x).max(floor);
-        self.0
+/// A slow gain stage for one value: follows its average level over about
+/// 10 s and puts it at AGC_TARGET. It holds while gated, and for input 20 dB
+/// below its average (decays, breaks) unless that lasts 5 s (the music was
+/// turned down): pauses do not turn it up.
+#[derive(Debug, Clone, Copy)]
+struct SlowAgc {
+    /// Average level (1/65536 dB); `None` until there was sound.
+    avg: Option<i64>,
+    /// Blocks in a row 20 dB or more below the average.
+    low: u32,
+}
+
+impl SlowAgc {
+    const fn new() -> Self {
+        SlowAgc { avg: None, low: 0 }
+    }
+
+    fn step(&mut self, d: Db, gated: bool) {
+        if gated {
+            return;
+        }
+        let x = i64::from(d) << 8;
+        let avg = self.avg.get_or_insert(x);
+        let low = x < *avg - (i64::from(20 * DB) << 8);
+        self.low = if low { self.low.saturating_add(1) } else { 0 };
+        if !low || self.low > 5 * RATE / BLOCK {
+            *avg += (x - *avg) * AGC_K >> 16;
+        }
+    }
+
+    fn gain(&self, target: Db) -> Db {
+        self.avg.map_or(0, |a| (target - (a >> 8) as Db).clamp(AGC_MIN, AGC_MAX))
     }
 }
 
@@ -225,12 +326,16 @@ pub struct Analyzer {
     /// Two-pole filters (12 dB/octave): low-pass 150 Hz, high-pass 150 Hz,
     /// low-pass 2 kHz (mid), high-pass 2 kHz.
     lp150: [OnePole; 2],
+    /// The crossovers in use and their coefficients.
+    cross_hz: (u16, u16),
+    cross_k: (i64, i64),
     hp150: [OnePole; 2],
     lp2k: [OnePole; 2],
     hp2k: [OnePole; 2],
     level: Env,
     bands: [Env; 3],
-    agc: [Agc; 4],
+    /// AGC per value: level, low, mid, high (each band uses its range).
+    agc: [SlowAgc; 4],
     peak: i32,
     onsets: [Onset; 3],
     // Beat tracking (in samples).
@@ -260,12 +365,14 @@ impl Analyzer {
             now: 0,
             dc: 0,
             lp150: [OnePole(0); 2],
+            cross_hz: (0, 0),
+            cross_k: (0, 0),
             hp150: [OnePole(0); 2],
             lp2k: [OnePole(0); 2],
             hp2k: [OnePole(0); 2],
             level: Env(0),
             bands: [Env(0); 3],
-            agc: [Agc(-120 * DB); 4],
+            agc: [SlowAgc::new(); 4],
             peak: 0,
             onsets: [Onset::new(250), Onset::new(120), Onset::new(80)],
             last_beat: None,
@@ -307,23 +414,28 @@ impl Analyzer {
         let x = ((x16 - self.dc) >> 16) as i32;
 
         // Bands: low < 150 Hz, mid 150 Hz..2 kHz, high > 2 kHz.
-        const K150: i64 = 3749;
-        const K2K: i64 = 35660;
-        let low1 = self.lp150[0].step(x, K150);
-        let low = self.lp150[1].step(low1, K150);
-        let h1 = x - self.hp150[0].step(x, K150);
-        let h2 = h1 - self.hp150[1].step(h1, K150);
-        let m1 = self.lp2k[0].step(h2, K2K);
-        let mid = self.lp2k[1].step(m1, K2K);
-        let g1 = x - self.hp2k[0].step(x, K2K);
-        let high = g1 - self.hp2k[1].step(g1, K2K);
+        if (p.low_hz, p.high_hz) != self.cross_hz {
+            self.cross_hz = (p.low_hz, p.high_hz);
+            self.cross_k = (coef_hz(u32::from(p.low_hz)), coef_hz(u32::from(p.high_hz)));
+        }
+        let (kl, kh) = self.cross_k;
+        let low1 = self.lp150[0].step(x, kl);
+        let low = self.lp150[1].step(low1, kl);
+        let h1 = x - self.hp150[0].step(x, kl);
+        let h2 = h1 - self.hp150[1].step(h1, kl);
+        let m1 = self.lp2k[0].step(h2, kh);
+        let mid = self.lp2k[1].step(m1, kh);
+        let g1 = x - self.hp2k[0].step(x, kh);
+        let high = g1 - self.hp2k[1].step(g1, kh);
         let band = [low, mid, high];
 
         let (atk, rel) = (coef_ms(u32::from(p.attack_ms)), coef_ms(u32::from(p.release_ms)));
         let level = self.level.step(x, atk, rel);
+        // Bands rise at once (2 ms) to show each hit; they fall at the
+        // release.
         let mut env = [0i32; 3];
         for k in 0..3 {
-            env[k] = self.bands[k].step(band[k], atk, rel);
+            env[k] = self.bands[k].step(band[k], coef_ms(2), rel);
             let o = &mut self.onsets[k];
             o.fast.step(band[k], coef_ms(2), coef_ms(40));
         }
@@ -346,24 +458,23 @@ impl Analyzer {
             self.gated_since = None;
         }
 
-        // Values 0..1 (Q16) in a window below the recent peak (AGC) or
-        // below 0 dBFS after the gain.
-        const RANGE: Db = 30 * DB;
-        let mut value = |k: usize, d: Db| -> u32 {
-            if gated {
-                return 0;
-            }
+        // Gains: the AGC's per value (slow, see SlowAgc) or the manual one.
+        let range = i32::from(p.range_db.clamp(12, 48)) * DB;
+        let levels = [input, db(env[0]), db(env[1]), db(env[2])];
+        let mut gains = [i32::from(p.gain_db) * DB; 4];
+        for k in 0..4 {
+            self.agc[k].step(levels[k], gated);
             if p.agc {
-                let top = self.agc[k].step(d, gate + RANGE);
-                window(d, top, RANGE)
-            } else {
-                window(d + i32::from(p.gain_db) * DB, 0, 48 * DB)
+                gains[k] = self.agc[k].gain(-range * 2 / 5);
             }
-        };
-        let lvl = value(0, input);
+        }
+        // Values 0..1 (Q16) in the window below 0 dBFS after the gain.
+        let value = |k: usize| -> u32 { if gated { 0 } else { window(levels[k] + gains[k], 0, range) } };
+        let lvl = value(0);
         let mut bands = [0u8; 3];
         for k in 0..3 {
-            bands[k] = (value(k + 1, db(env[k])) >> 8) as u8;
+            let v = (value(k + 1) >> 8) * u32::from(p.band_gain[k]) / 128;
+            bands[k] = v.min(255) as u8;
         }
 
         // Onsets: fast envelope this many dB above the slow one.
@@ -441,9 +552,18 @@ impl Analyzer {
                 activity,
                 input_db: (input / DB).clamp(-120, 0) as i16,
                 beat_ms: (self.period * 1000 / RATE) as u16,
+                gain_db: gains.map(|g| (g / DB) as i8),
                 status,
             }
         };
+    }
+
+    /// A beat by hand (the tap channel): a pulse now, and the tempo follows
+    /// the taps like it follows kicks.
+    pub fn tap(&mut self) {
+        let now = self.now;
+        self.onsets[0].last = now;
+        self.beat(now);
     }
 
     /// A kick: updates the beat period (60..=200 BPM).
@@ -506,6 +626,24 @@ mod tests {
     }
 
     #[test]
+    fn crossover_coefficients() {
+        // The fixed values before: 150 Hz -> 3749, 2 kHz -> 35660.
+        assert!(coef_hz(150).abs_diff(3749) < 40, "{}", coef_hz(150));
+        assert!(coef_hz(2000).abs_diff(35660) < 200, "{}", coef_hz(2000));
+        assert!(coef_hz(40) < coef_hz(500) && coef_hz(8000) < 65535);
+    }
+
+    #[test]
+    fn crossover_moves_the_bands() {
+        // 300 Hz: mid with the default, low with the low band up to 500 Hz.
+        let p = Params { agc: false, ..Params::default() };
+        let wide = Params { low_hz: 500, ..p };
+        let a = *run(&p, 1, |n| sine(FS / 8, 300, n)).last().unwrap();
+        let b = *run(&wide, 1, |n| sine(FS / 8, 300, n)).last().unwrap();
+        assert!(a.bands[1] > a.bands[0] && b.bands[0] > b.bands[1], "{:?} {:?}", a.bands, b.bands);
+    }
+
+    #[test]
     fn frames_at_44_hz() {
         assert_eq!(run(&Params::default(), 1, |_| 0).len(), 44);
     }
@@ -521,14 +659,14 @@ mod tests {
 
     #[test]
     fn bands_split_by_frequency() {
-        // -18 dBFS without AGC: about 160 of 255 in its own band.
-        let p = Params { agc: false, ..Params::default() };
+        // -18 dBFS without AGC: about 100 of 255 in its own band (30 dB window).
+        let p = Params { agc: false, range_db: 30, ..Params::default() };
         let last = |f: u32| *run(&p, 1, |n| sine(FS / 8, f, n)).last().unwrap();
         let (low, mid, high) = (last(60), last(600), last(6000));
-        assert!(low.bands[0] > 130 && low.bands[1] + 50 < low.bands[0] && low.bands[2] < 20, "60 Hz: {:?}", low.bands);
-        assert!(mid.bands[1] > 110 && mid.bands[0] + 30 < mid.bands[1] && mid.bands[2] + 30 < mid.bands[1], "600 Hz: {:?}", mid.bands);
-        assert!(high.bands[2] > 90 && high.bands[1] + 30 < high.bands[2] && high.bands[0] < 20, "6 kHz: {:?}", high.bands);
-        assert!(low.level > 30000 && low.status == Status::Active);
+        assert!(low.bands[0] > 80 && low.bands[1] + 40 < low.bands[0] && low.bands[2] < 10, "60 Hz: {:?}", low.bands);
+        assert!(mid.bands[1] > 60 && mid.bands[0] + 20 < mid.bands[1] && mid.bands[2] + 20 < mid.bands[1], "600 Hz: {:?}", mid.bands);
+        assert!(high.bands[2] > 20 && high.bands[1] + 15 < high.bands[2] && high.bands[0] < 10, "6 kHz: {:?}", high.bands);
+        assert!(low.level > 20000 && low.status == Status::Active);
     }
 
     #[test]
@@ -550,6 +688,52 @@ mod tests {
     }
 
     #[test]
+    fn agc_is_slow_and_holds_in_silence() {
+        let p = Params::default();
+        let mut a = Analyzer::new();
+        let mut last = Snapshot::empty(Status::Gated);
+        let mut feed = |a: &mut Analyzer, secs: u32, amp: i32, off: u32| {
+            for n in 0..secs * RATE {
+                if let Some(s) = a.push(sine(amp, 600, n + off), &p) {
+                    last = s;
+                }
+            }
+            last
+        };
+        // -38 dBFS for 40 s: the average goes to about 60 % of the range.
+        let quiet = feed(&mut a, 40, FS / 80, 0);
+        assert!((20..=32).contains(&quiet.gain_db[0]), "gain {}", quiet.gain_db[0]);
+        assert!((30000..=48000).contains(&quiet.level), "level {}", quiet.level);
+        // 20 dB louder: the level jumps up at once (the gain does not follow
+        // within a second) ...
+        let loud = feed(&mut a, 1, FS / 8, 0);
+        assert!(loud.level > 60000 && loud.gain_db[0] >= quiet.gain_db[0] - 3, "{} {}", loud.level, loud.gain_db[0]);
+        // ... and is back near the target after ~40 s.
+        let settled = feed(&mut a, 40, FS / 8, 0);
+        assert!((30000..=48000).contains(&settled.level), "level {}", settled.level);
+        assert!(settled.gain_db[0] < quiet.gain_db[0] - 15);
+        // Silence (below the gate; not exact zeros, those are a stuck mic)
+        // for 20 s does not turn it up.
+        let g = settled.gain_db[0];
+        feed(&mut a, 20, 80, 0);
+        let after = feed(&mut a, 1, FS / 8, 0);
+        assert!(after.gain_db[0].abs_diff(g) <= 1, "{} vs {}", after.gain_db[0], g);
+        // Turned down by 26 dB for good: after the 5 s hold it follows.
+        let down = feed(&mut a, 60, FS / 160, 0);
+        assert!(down.gain_db[0] > g + 15, "{} vs {}", down.gain_db[0], g);
+    }
+
+    #[test]
+    fn bands_have_their_own_agc() {
+        // A loud low tone and a 24 dB quieter high one: with one gain the high
+        // band would sit below the window; with its own AGC it uses its range.
+        let p = Params::default();
+        let s = *run(&p, 40, |n| sine(FS / 8, 60, n) + sine(FS / 128, 5000, n)).last().unwrap();
+        assert!(s.bands[0] > 100 && s.bands[2] > 100, "{:?} gains {:?}", s.bands, s.gain_db);
+        assert!(s.gain_db[3] > s.gain_db[1] + 20, "{:?}", s.gain_db);
+    }
+
+    #[test]
     fn stuck_input_is_a_fault() {
         let s = run(&Params::default(), 3, |_| 12345);
         assert_eq!(s.last().unwrap().status, Status::Fault);
@@ -560,6 +744,47 @@ mod tests {
     fn full_scale_is_clipping() {
         let s = run(&Params::default(), 1, |n| sine(FS, 1000, n));
         assert_eq!(s.last().unwrap().status, Status::Clipping);
+    }
+
+    #[test]
+    fn control_overrides() {
+        let p = Params::default();
+        let (q, c) = apply_control(&p, &[0; CONTROL_CHANNELS]);
+        assert_eq!((q, c), (p, Control::default()));
+        let (q, c) = apply_control(&p, &[1, 255, 1, 255, 1, 255, 64, 0, 255, 200, 128]);
+        assert!(!q.agc);
+        assert_eq!((q.gain_db, q.gate_db, q.attack_ms, q.release_ms, q.sensitivity), (40, -90, 500, 10, 10));
+        assert_eq!(q.band_gain, [64, 128, 255]);
+        assert_eq!(c, Control { freeze: true, tap: true });
+        assert!(apply_control(&p, &[128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).0.agc);
+    }
+
+    #[test]
+    fn band_gain_scales() {
+        let p = Params { agc: false, ..Params::default() };
+        let half = Params { band_gain: [64, 128, 128], ..p };
+        let a = *run(&p, 1, |n| sine(FS / 8, 60, n)).last().unwrap();
+        let b = *run(&half, 1, |n| sine(FS / 8, 60, n)).last().unwrap();
+        assert!(b.bands[0].abs_diff(a.bands[0] / 2) <= 1, "{} vs {}", b.bands[0], a.bands[0]);
+    }
+
+    #[test]
+    fn taps_set_the_tempo() {
+        let mut a = Analyzer::new();
+        let p = Params::default();
+        let mut beats = 0;
+        for n in 0..4 * RATE {
+            if n % (RATE / 2) == RATE / 4 {
+                a.tap();
+            }
+            if let Some(s) = a.push(0, &p)
+                && s.beat
+            {
+                beats += 1;
+            }
+        }
+        assert!(beats >= 8, "{beats} beat frames");
+        assert!(a.period.abs_diff(RATE / 2) < 10, "period {}", a.period);
     }
 
     #[test]
@@ -574,6 +799,7 @@ mod tests {
             activity: Activity::Music,
             input_db: 0,
             beat_ms: 500,
+            gain_db: [0; 4],
             status: Status::Active,
         };
         assert_eq!(encode(&s), [0x12, 0x34, 7, 255, 99, 1, 2, 3, 255, 0, 255, 255, 255, 192, 0, 0]);

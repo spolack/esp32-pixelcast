@@ -16,10 +16,15 @@ pub(crate) async fn eth_link_task(eth: Stack<'static>) -> ! {
 
 /// Applies the Ethernet address settings, again whenever they change.
 pub(crate) async fn eth_addressing(eth: Stack<'static>, mac: [u8; 6]) -> ! {
-    let fallback = Ipv4Addr::new(2, mac[3], mac[4], mac[5].clamp(1, 254));
+    // Art-Net's default: 2.x.y.z/8 from the MAC.
+    let artnet = Ipv4Addr::new(2, mac[3], mac[4], mac[5].clamp(1, 254));
     loop {
         settings::ETH_CHANGED.reset();
         let s = settings::current();
+        let fallback = match s.fallback_ip {
+            Some(ip) => (ip, s.fallback_prefix),
+            None => (artnet, 8),
+        };
         // Never hand the stack an address it panics on (e.g. a damaged
         // record); the settings page already rejects those.
         let mode = if s.eth_mode == EthMode::Static && !settings::usable_ip(s.ip) {
@@ -67,7 +72,7 @@ pub(crate) fn set_eth_status(addr: Option<(Ipv4Addr, u8)>, source: &'static str)
 /// minute without dropping the address (see [`dhcp_server_answers`]); only
 /// when one answers does the real client take over. That also covers
 /// switches that block a new port for ~30 s.
-pub(crate) async fn dhcp_with_fallback(eth: Stack<'static>, fallback: Ipv4Addr, use_fallback: bool) -> ! {
+pub(crate) async fn dhcp_with_fallback(eth: Stack<'static>, (fallback, prefix): (Ipv4Addr, u8), use_fallback: bool) -> ! {
     // Note: `set_config_v4` does not wake the network runner by itself; the
     // Art-Net task polls its socket every 250 ms, which does.
     eth.set_config_v4(ConfigV4::Dhcp(Default::default()));
@@ -107,13 +112,13 @@ pub(crate) async fn dhcp_with_fallback(eth: Stack<'static>, fallback: Ipv4Addr, 
                 }
                 Either::First(_) => {
                     eth.set_config_v4(ConfigV4::Static(StaticConfigV4 {
-                        address: Ipv4Cidr::new(fallback, 8),
+                        address: Ipv4Cidr::new(fallback, prefix),
                         gateway: None,
                         dns_servers: Default::default(),
                     }));
                     on_fallback = true;
-                    set_eth_status(Some((fallback, 8)), "Art-Net fallback");
-                    warn!("No DHCP answer; Ethernet IP {}/8 (Art-Net default)", fallback);
+                    set_eth_status(Some((fallback, prefix)), "fallback");
+                    warn!("No DHCP answer; Ethernet IP {}/{} (fallback)", fallback, prefix);
                     // Stay until the link drops or a DHCP server answers. The
                     // real client drops the address for up to DHCP_TIMEOUT_MS,
                     // which closes every connection; the probe keeps it.

@@ -57,15 +57,19 @@
   selects "valid": check once at the board.
 
 ## Audio (next steps)
-- Control channels (console → node): gain, gate, attack, release, beat
-  sensitivity, per-band gain, freeze, tap; 0 = the settings page's value.
 - OSC out (`/pixelcast/level`, `/beat`, `/bands`, `/status`).
-- Fixture profiles for the audio universe (GDTF for grandMA3, MagicQ, QLC+).
+- Fixture profiles for the audio universe and the control channels (GDTF
+  for grandMA3, MagicQ, QLC+).
+- Settings page: band gains (now only from the control channels).
 - BPM and tempo confidence on channels 15–16; band edges adjustable.
 - Advertise the audio universe as an input port in ArtPollReply.
-- Capture restarts under full Art-Net load (about one every two seconds): a
-  larger DMA ring needs RAM. The main stack is at 25 368 of the 24 576
-  bytes it must keep (792 spare; measured peak use leaves ~3.9 KB free).
+- Audio capture: the I2S DMA stops about once per HTTP request (and every
+  two seconds at rest), although the task is never away longer than ~6 ms;
+  each stop costs ~8 ms of audio. Suspect: DMA contention with the W5500's
+  SPI DMA. Also: the "available" interrupt does not always wake the task
+  (a 3 ms timeout covers it). A larger ring needs RAM: the main stack is at
+  25 328 of the 24 576 bytes it must keep (752 spare; measured peak use
+  leaves ~3.9 KB free).
   Knobs: the receive task's buffers (`rx.rs`), the two heap regions
   (`main.rs`), the LED pool (`ledout.rs`, reclaimed RAM, 2.5 KB left there).
 - Mics: PDM and I2S with MCLK are built but untested on hardware (no such

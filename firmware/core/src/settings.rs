@@ -36,8 +36,12 @@ pub struct Settings {
     pub ip: Ipv4Addr,
     pub prefix: u8,
     pub gateway: Option<Ipv4Addr>,
-    /// Use 2.x.y.z/8 when DHCP gets no answer.
+    /// Use a fallback address when DHCP gets no answer.
     pub artnet_fallback: bool,
+    /// That address; `None`: Art-Net's 2.x.y.z from the MAC, with
+    /// `fallback_prefix` (8 for Art-Net).
+    pub fallback_ip: Option<Ipv4Addr>,
+    pub fallback_prefix: u8,
     pub ap_channel: u8,
     /// Start the setup Wi-Fi after the Ethernet link has been down this long.
     pub ap_after_s: u32,
@@ -170,6 +174,11 @@ pub struct Audio {
     /// sACN priority, 1..=200.
     pub priority: u8,
     pub params: crate::audio::Params,
+    /// Control channels from the console: in the input protocol, this
+    /// universe (port-address) from DMX address `control_address` on.
+    pub control: bool,
+    pub control_universe: u16,
+    pub control_address: u16,
 }
 
 impl Default for Audio {
@@ -183,6 +192,9 @@ impl Default for Audio {
             universe: 16,
             priority: 100,
             params: crate::audio::Params::default(),
+            control: false,
+            control_universe: 17,
+            control_address: 1,
         }
     }
 }
@@ -238,6 +250,8 @@ impl Default for Settings {
             prefix: 8,
             gateway: None,
             artnet_fallback: true,
+            fallback_ip: None,
+            fallback_prefix: 8,
             ap_channel: config::AP_CHANNEL,
             ap_after_s: (config::AP_AFTER_LINK_DOWN_MS / 1000) as u32,
             ap_boot_min: 0,
@@ -323,6 +337,15 @@ impl Settings {
                     _ => Err("The gateway address is not valid."),
                 },
                 "fallback" => Ok(next.artnet_fallback = value == "1"),
+                "fallback_ip" if value.is_empty() => Ok(next.fallback_ip = None),
+                "fallback_ip" => match value.parse() {
+                    Ok(ip) if usable_ip(ip) => Ok(next.fallback_ip = Some(ip)),
+                    _ => Err("The fallback address is not valid (a normal unicast address, or empty for Art-Net's 2.x.y.z)."),
+                },
+                "fallback_prefix" => match value.parse::<u8>() {
+                    Ok(p @ 1..=30) => Ok(next.fallback_prefix = p),
+                    _ => Err("The fallback prefix length must be 1 to 30."),
+                },
                 "ap_channel" => match value.parse::<u8>() {
                     Ok(c @ 1..=13) => Ok(next.ap_channel = c),
                     _ => Err("The Wi-Fi channel must be 1 to 13."),
@@ -481,6 +504,16 @@ impl Settings {
             if form_has(form, "au_univ") && !form_has(form, "au_agc") {
                 next.audio.params.agc = false;
             }
+            if form_has(form, "au_univ") && !form_has(form, "au_ctl") {
+                next.audio.control = false;
+            }
+            let a = &next.audio;
+            if a.control && next.led_universes().any(|u| u == a.control_universe) {
+                return Err("The audio control universe is one the LED outputs receive: choose another.");
+            }
+            if a.control && a.on && a.control_universe == a.universe {
+                return Err("The audio control universe must differ from the one the audio is sent on.");
+            }
             next.audio.mic.validate()?;
             if next.audio.on && next.led_universes().any(|u| u == next.audio.universe) {
                 return Err("The audio universe is one the LED outputs receive: choose another.");
@@ -506,6 +539,8 @@ impl Settings {
             prefix,
             gateway,
             artnet_fallback,
+            fallback_ip,
+            fallback_prefix,
             ap_channel,
             ap_after_s,
             ap_boot_min,
@@ -548,6 +583,8 @@ impl Settings {
         kv("prefix", &prefix.to_string());
         kv("gateway", &gateway.map(|g| g.to_string()).unwrap_or_default());
         kv("fallback", flag(*artnet_fallback));
+        kv("fallback_ip", &fallback_ip.map(|a| a.to_string()).unwrap_or_default());
+        kv("fallback_prefix", &fallback_prefix.to_string());
         kv("ap_channel", &ap_channel.to_string());
         kv("ap_after", &ap_after_s.to_string());
         kv("ap_boot", &ap_boot_min.to_string());
@@ -586,9 +623,21 @@ impl Settings {
         kv("power_out_mw", &power_out_mw.to_string());
         kv("power_total_mw", &power_total_mw.to_string());
         kv("led_volts_dv", &led_decivolts.to_string());
-        let Audio { on, mic, protocol, dest, universe, priority, params } = audio;
+        let Audio { on, mic, protocol, dest, universe, priority, params, control, control_universe, control_address } = audio;
         let Mic { kind, sel_high, din, ws, bclk } = mic;
-        let crate::audio::Params { agc, gain_db, gate_db, attack_ms, release_ms, sensitivity } = params;
+        // band_gain: only the control channels set it.
+        let crate::audio::Params {
+            agc,
+            gain_db,
+            gate_db,
+            attack_ms,
+            release_ms,
+            sensitivity,
+            band_gain: _,
+            low_hz,
+            high_hz,
+            range_db,
+        } = params;
         kv("au_on", flag(*on));
         kv("au_mic", kind.key());
         kv("au_sel", if *sel_high { "vdd" } else { "gnd" });
@@ -605,6 +654,12 @@ impl Settings {
         kv("au_attack", &attack_ms.to_string());
         kv("au_release", &release_ms.to_string());
         kv("au_sens", &sensitivity.to_string());
+        kv("au_low", &low_hz.to_string());
+        kv("au_high", &high_hz.to_string());
+        kv("au_range", &range_db.to_string());
+        kv("au_ctl", flag(*control));
+        kv("au_ctl_univ", &control_universe.to_string());
+        kv("au_ctl_addr", &control_address.to_string());
         s
     }
 
@@ -670,6 +725,27 @@ fn apply_audio(a: &mut Audio, key: &str, value: &str) -> Result<(), &'static str
         "au_release" => match value.parse::<u16>() {
             Ok(v @ 10..=3000) => p.release_ms = v,
             _ => return Err("The release must be 10 to 3000 ms."),
+        },
+        "au_ctl" => a.control = value == "1",
+        "au_ctl_univ" => match value.parse::<u16>() {
+            Ok(u) if u <= 0x7fff => a.control_universe = u,
+            _ => return Err("The audio control universe must be 0 to 32767."),
+        },
+        "au_ctl_addr" => match value.parse::<u16>() {
+            Ok(v) if (1..=(512 - crate::audio::CONTROL_CHANNELS as u16 + 1)).contains(&v) => a.control_address = v,
+            _ => return Err("The audio control address must be 1 to 502."),
+        },
+        "au_low" => match value.parse::<u16>() {
+            Ok(v @ 40..=500) => p.low_hz = v,
+            _ => return Err("The low/mid crossover must be 40 to 500 Hz."),
+        },
+        "au_high" => match value.parse::<u16>() {
+            Ok(v @ 1000..=8000) => p.high_hz = v,
+            _ => return Err("The mid/high crossover must be 1000 to 8000 Hz."),
+        },
+        "au_range" => match value.parse::<u8>() {
+            Ok(v @ 12..=48) => p.range_db = v,
+            _ => return Err("The range must be 12 to 48 dB."),
         },
         "au_sens" => match value.parse::<u8>() {
             Ok(v @ 1..=10) => p.sensitivity = v,
@@ -783,6 +859,8 @@ impl Settings {
         self.prefix = d.prefix;
         self.gateway = d.gateway;
         self.artnet_fallback = d.artnet_fallback;
+        self.fallback_ip = d.fallback_ip;
+        self.fallback_prefix = d.fallback_prefix;
         self.ap_channel = d.ap_channel;
         self.ap_after_s = d.ap_after_s;
         self.ap_boot_min = d.ap_boot_min;
@@ -816,6 +894,8 @@ impl Changes {
             prefix,
             gateway,
             artnet_fallback,
+            fallback_ip,
+            fallback_prefix,
             ap_channel,
             ap_after_s: _,  // read live
             ap_boot_min: _, // read at start-up
@@ -846,7 +926,9 @@ impl Changes {
                 || old.ip != *ip
                 || old.prefix != *prefix
                 || old.gateway != *gateway
-                || old.artnet_fallback != *artnet_fallback,
+                || old.artnet_fallback != *artnet_fallback
+                || old.fallback_ip != *fallback_ip
+                || old.fallback_prefix != *fallback_prefix,
             ap: old.name != *name || old.password != *password || old.ap_channel != *ap_channel,
             led: old.led_type != *led_type
                 || old.order != *order
@@ -886,6 +968,8 @@ mod tests {
         s.prefix = 24;
         s.gateway = Some(Ipv4Addr::new(10, 1, 2, 254));
         s.artnet_fallback = false;
+        s.fallback_ip = Some(Ipv4Addr::new(10, 9, 8, 7));
+        s.fallback_prefix = 16;
         s.ap_channel = 11;
         s.ap_after_s = 60;
         s.ap_boot_min = 15;
@@ -928,6 +1012,9 @@ mod tests {
             dest: Some(Ipv4Addr::new(10, 1, 2, 9)),
             universe: 300,
             priority: 150,
+            control: true,
+            control_universe: 301,
+            control_address: 40,
             params: crate::audio::Params {
                 agc: false,
                 gain_db: 12,
@@ -935,6 +1022,10 @@ mod tests {
                 attack_ms: 20,
                 release_ms: 800,
                 sensitivity: 8,
+                band_gain: [128; 3],
+                low_hz: 220,
+                high_hz: 3500,
+                range_db: 20,
             },
         };
         s

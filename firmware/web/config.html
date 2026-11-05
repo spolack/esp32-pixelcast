@@ -15,6 +15,10 @@
 .row2,.rowip{display:grid;gap:0 14px;grid-template-columns:minmax(0,1fr)}
 .rowip{grid-template-columns:minmax(0,1fr) 120px}
 @media (min-width:520px){.row2{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.tabs{display:flex;gap:2px;margin:0 0 18px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tabs button{flex:none;padding:10px 14px;margin-bottom:-1px;border:0;border-bottom:2px solid transparent;background:none;color:var(--mu);font:inherit;font-weight:600;cursor:pointer;white-space:nowrap}
+.tabs button:hover{color:var(--tx)}
+.tabs button[aria-selected="true"]{color:var(--tx);border-bottom-color:var(--ac)}
 .seg{display:inline-flex;margin-bottom:14px;padding:3px;background:var(--bg);border:1px solid var(--line);border-radius:10px}
 .seg label{padding:7px 20px;border-radius:7px;color:var(--mu);font-size:14px;font-weight:600;cursor:pointer;
   transition:background-color .15s,color .15s}
@@ -87,9 +91,16 @@ select.in{padding-right:8px}
 <header id="top"></header>
 <main class="wrap">
 <div id="auth" class="banner err" hidden><i class="ic" data-i="warn"></i><div><span id="auth-t"></span> <a href="/config">Reload</a></div></div>
-<div id="b-pw" class="banner" hidden><i class="ic" data-i="warn"></i><div>The default password is still set. Choose a new one below.</div></div>
+<div id="b-pw" class="banner" hidden><i class="ic" data-i="warn"></i><div>The default password is still set. Choose a new one under Device &amp; network.</div></div>
 <div class="head"><h1>Settings</h1><span class="sub">Changes apply immediately</span></div>
 <div id="body" hidden>
+<nav class="tabs" role="tablist" aria-label="Settings">
+  <button type="button" role="tab" data-tab="net">Device &amp; network</button>
+  <button type="button" role="tab" data-tab="led">LED</button>
+  <button type="button" role="tab" data-tab="audio" id="tab-audio">Audio</button>
+  <button type="button" role="tab" data-tab="sys">System</button>
+</nav>
+<div class="tab" data-tab="net">
 <form id="f" class="grid" novalidate autocomplete="off">
   <section class="card">
     <h2><i class="ic" data-i="cpu"></i>Device &amp; access</h2>
@@ -123,8 +134,17 @@ select.in{padding-right:8px}
       <div class="fld"><label class="fl" for="gateway">Gateway <span class="mu">(optional)</span></label>
         <input class="in mono" id="gateway" inputmode="decimal" autocomplete="off" placeholder="192.168.1.1"></div>
     </div>
-    <label class="chk"><input type="checkbox" id="fallback">
-      <span>Art-Net fallback address<br><span class="hint">Used when DHCP gets no answer.</span></span></label>
+    <div id="fb">
+      <label class="chk"><input type="checkbox" id="fallback">
+        <span>Fallback address<br><span class="hint">Used when DHCP gets no answer; DHCP is tried again meanwhile.</span></span></label>
+      <div class="rowip" id="fb-f" style="margin-top:10px">
+        <div class="fld"><label class="fl" for="fallback_ip">Address</label>
+          <input class="in mono" id="fallback_ip" inputmode="decimal" autocomplete="off"></div>
+        <div class="fld"><label class="fl" for="fallback_prefix">Prefix (1–30)</label>
+          <input class="in" id="fallback_prefix" type="number" min="1" max="30" inputmode="numeric"></div>
+      </div>
+      <p class="hint" id="fb-h">Empty: Art-Net's default, 2.x.y.z/8 from the board's MAC.</p>
+    </div>
   </section>
 
   <section class="card">
@@ -135,14 +155,14 @@ select.in{padding-right:8px}
       <div class="fld"><label class="fl" for="ap_after">Start delay (5–3600 s)</label>
         <input class="in" id="ap_after" type="number" min="5" max="3600" inputmode="numeric"></div>
     </div>
-    <p class="hint">Starts on its own when the Ethernet link is down for the start delay, when BOOT is held 3 s, or from Maintenance.</p>
+    <p class="hint">Starts on its own when the Ethernet link is down for the start delay, when BOOT is held 3 s, or from System → Diagnostics.</p>
     <div class="row2">
       <div class="fld"><label class="fl" for="ap_boot">On after each start (min, 0 = no)</label>
         <input class="in" id="ap_boot" type="number" min="0" max="1440" inputmode="numeric"></div>
       <div class="fld"><label class="fl" for="ap_idle">Then off after no web use (min)</label>
         <input class="in" id="ap_idle" type="number" min="1" max="240" inputmode="numeric"></div>
     </div>
-    <div id="ap-warn" class="note warn">While the setup Wi-Fi runs, and until the next restart, the LED outputs are limited to about 1600 RGBW (2100 RGB) LEDs in total instead of about 4100: the Wi-Fi takes that memory. With "On after each start" this applies after every start, also once the Wi-Fi has switched off again.</div>
+    <div id="ap-warn" class="note warn" hidden></div>
   </section>
 
   <section class="card">
@@ -152,7 +172,9 @@ select.in{padding-right:8px}
     <div id="msg" class="msg" role="status" hidden></div>
   </section>
 </form>
+</div>
 
+<div class="tab" data-tab="led">
 <form id="lf" class="grid" novalidate autocomplete="off" hidden>
   <section class="card">
     <h2><i class="ic" data-i="fader"></i>LED strip</h2>
@@ -311,7 +333,9 @@ select.in{padding-right:8px}
     <div id="tpmsg" class="msg" role="status" hidden></div>
   </section>
 </div>
+</div>
 
+<div class="tab" data-tab="audio">
 <form id="af" class="grid" novalidate autocomplete="off" hidden>
   <section class="card">
     <h2><i class="ic" data-i="pulse"></i>Audio <span id="au-p" class="pill">Off</span></h2>
@@ -331,9 +355,11 @@ select.in{padding-right:8px}
         <input class="in" id="au_prio" type="number" min="1" max="200" inputmode="numeric"></div>
     </div>
     <p class="hint" id="au-h"></p>
+    <button id="asave" class="btn pri" type="submit" disabled style="margin-top:14px">Save audio settings</button>
+    <div id="amsg" class="msg" role="status" hidden></div>
   </section>
 
-  <section class="card">
+  <section class="card" id="au-mic-c">
     <h2><i class="ic" data-i="cpu"></i>Microphone</h2>
     <div class="row2">
       <div class="fld"><label class="fl" for="au_mic">Type</label>
@@ -349,12 +375,12 @@ select.in{padding-right:8px}
       <div class="fld" id="au-bclk-f"><label class="fl" for="au_bclk">BCLK / SCK</label><select class="in" id="au_bclk"></select></div>
     </div>
     <p class="hint" id="au-mic-h"></p>
-    <div id="au-pend" class="note warn" hidden>The microphone type or pins changed: they apply after a restart (Maintenance → Restart).</div>
+    <div id="au-pend" class="note warn" hidden>The microphone type or pins changed: they apply after a restart (System → Restart).</div>
   </section>
 
-  <section class="card">
+  <section class="card" id="au-an-c">
     <h2><i class="ic" data-i="sliders"></i>Analysis</h2>
-    <label class="chk"><input type="checkbox" id="au_agc"><span>Automatic gain: each value follows its own recent peak</span></label>
+    <label class="chk"><input type="checkbox" id="au_agc"><span>Automatic gain: level and each band get their own gain, turned slowly (over about 10 s) so their average sits at 60 %; peaks go above it, silence and breaks do not turn it up</span></label>
     <div class="row2" style="margin-top:14px">
       <div class="fld"><label class="fl" for="au_gain">Gain without AGC (dB)</label>
         <input class="in" id="au_gain" type="number" min="-20" max="40" inputmode="numeric"></div>
@@ -364,11 +390,27 @@ select.in{padding-right:8px}
         <input class="in" id="au_attack" type="number" min="1" max="500" inputmode="numeric"></div>
       <div class="fld"><label class="fl" for="au_release">Release (ms)</label>
         <input class="in" id="au_release" type="number" min="10" max="3000" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="au_range">Range (dB, 12–48)</label>
+        <input class="in" id="au_range" type="number" min="12" max="48" inputmode="numeric"></div>
     </div>
     <div class="fld" style="margin-top:10px"><label class="fl" for="au_sens">Beat sensitivity</label>
       <div class="rng"><input id="au_sens" type="range" min="1" max="10" step="1" value="5"><output id="au_sensv" for="au_sens">5</output></div></div>
-    <button id="asave" class="btn pri" type="submit" disabled style="margin-top:14px">Save audio settings</button>
-    <div id="amsg" class="msg" role="status" hidden></div>
+    <div class="row2" style="margin-top:10px">
+      <div class="fld"><label class="fl" for="au_low">Low/mid crossover (Hz)</label>
+        <input class="in" id="au_low" type="number" min="40" max="500" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="au_high">Mid/high crossover (Hz)</label>
+        <input class="in" id="au_high" type="number" min="1000" max="8000" inputmode="numeric"></div>
+    </div>
+    <p class="hint">Low = up to the first crossover (also what the beat listens to), high = above the second. Filters with 12 dB/octave. Range: the dB span the values cover; smaller makes every hit swing harder. A short release (50–100 ms) makes the bands fall back quickly between hits.</p>
+    <h3>Console control</h3>
+    <label class="chk"><input type="checkbox" id="au_ctl"><span>Take these values from the console (11 DMX channels in the input protocol)</span></label>
+    <div class="row2" id="au-ctl-f" style="margin-top:10px">
+      <div class="fld"><label class="fl" for="au_ctl_univ" id="au-ctl-univ-l">Universe</label>
+        <input class="in" id="au_ctl_univ" type="number" min="0" max="32767" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="au_ctl_addr">Start address</label>
+        <input class="in" id="au_ctl_addr" type="number" min="1" max="502" inputmode="numeric"></div>
+    </div>
+    <p class="hint" id="au-ctl-h">Channels: 1 AGC (1–127 off, 128–255 on), 2 gain, 3 noise gate, 4 attack, 5 release, 6 beat sensitivity, 7–9 low/mid/high gain (128 = ×1), 10 freeze (&gt; 127), 11 tap (each rise through 128 is a beat). 0 keeps the value above; without data for 2.5 s all values above apply again.</p>
   </section>
 
   <section class="card span" id="au-live" hidden>
@@ -377,6 +419,7 @@ select.in{padding-right:8px}
       <div><span class="sub">Input</span><b id="au-db">—</b></div>
       <div><span class="sub">Beat</span><b id="au-bpm">—</b></div>
       <div><span class="sub">Activity</span><b id="au-act">—</b></div>
+      <div><span class="sub" id="au-gain-l">Gain</span><b id="au-gain">—</b></div>
     </div>
     <div class="aum">
       <span>Level</span><div class="bar"><i id="au-lv"></i></div>
@@ -389,7 +432,9 @@ select.in{padding-right:8px}
     <p class="hint">Simulate beat sends one beat (the beat and low-onset channels for 80 ms), to check a console's mapping without music.</p>
   </section>
 </form>
+</div>
 
+<div class="tab" data-tab="sys">
 <div class="grid">
   <section class="card">
     <h2><i class="ic" data-i="upload"></i>Firmware update</h2>
@@ -449,6 +494,7 @@ select.in{padding-right:8px}
   </section>
 </div>
 </div>
+</div>
 </main>
 <script><!--COMMON_JS--></script>
 <script>
@@ -498,6 +544,10 @@ function setBusy(b) { busy = b; enable(); }
 
 function sync(e) {
   show('static', mode() === 'static');
+  show('fb', mode() === 'dhcp');
+  show('fb-f', $('fallback').checked); show('fb-h', $('fallback').checked);
+  $('fallback_prefix').disabled = !val('fallback_ip');
+  if (!val('fallback_ip')) $('fallback_prefix').value = 8;
   $('wnote').className = 'note' + (drops() ? ' warn' : '');
   if (e && e.target.removeAttribute) e.target.removeAttribute('aria-invalid');
 }
@@ -513,10 +563,13 @@ function fill(c, part) {
     ($('eth-' + c.eth) || $('eth-dhcp')).checked = true;
     $('ip').value = c.ip; $('prefix').value = c.prefix; $('gateway').value = c.gateway;
     $('fallback').checked = !!c.fallback;
+    $('fallback_ip').value = c.fallback_ip || ''; $('fallback_ip').placeholder = c.fallback_auto || '2.x.y.z';
+    $('fallback_prefix').value = c.fallback_prefix;
     $('ap_channel').value = c.ap_channel; $('ap_after').value = c.ap_after;
     $('ap_boot').value = c.ap_boot; $('ap_idle').value = c.ap_idle;
   }
   if (part !== 'dev' && part !== 'audio') fillLed(c);
+  wifiNote(c);
   if (part !== 'dev' && part !== 'led') fillAudio(c);
   show('b-pw', c.default_password);
   const nu = !c.ota_available ? 'Over-the-air updates are not available on this device.' : !c.restart_allowed ? HOLD : '';
@@ -537,6 +590,9 @@ function validate() {
     chk('ip', IP.test(val('ip')), 'IP address');
     chk('prefix', int('prefix', 1, 30), 'prefix 1–30');
     chk('gateway', !val('gateway') || IP.test(val('gateway')), 'gateway');
+  } else if ($('fallback').checked && val('fallback_ip')) {
+    chk('fallback_ip', IP.test(val('fallback_ip')), 'fallback address');
+    chk('fallback_prefix', int('fallback_prefix', 1, 30), 'fallback prefix 1–30');
   }
   chk('ap_channel', int('ap_channel', 1, 13), 'channel 1–13');
   chk('ap_after', int('ap_after', 5, 3600), 'delay 5–3600 s');
@@ -553,7 +609,11 @@ $('f').onsubmit = async e => {
   const body = {name: val('name'), password: $('password').value, password2: $('password2').value, eth: mode(),
     ip: n.ip, prefix: n.prefix, gateway: n.gateway, ap_channel: val('ap_channel'), ap_after: val('ap_after'),
     ap_boot: val('ap_boot'), ap_idle: val('ap_idle')};
-  if ($('fallback').checked) body.fallback = '1';
+  // The fallback belongs to DHCP: with static the stored values stay.
+  const dhcp = mode() === 'dhcp';
+  if (dhcp ? $('fallback').checked : cfg.fallback) body.fallback = '1';
+  body.fallback_ip = dhcp ? val('fallback_ip') : cfg.fallback_ip;
+  body.fallback_prefix = dhcp && val('fallback_ip') ? val('fallback_prefix') : cfg.fallback_prefix;
   setBusy(true); msg('msg', 'info', 'Saving…');
   try {
     const r = await postForm('/config', body);
@@ -712,6 +772,14 @@ function renderOutputs(v) {
 // LED memory: all outputs share it (see docs/api.md). The setup Wi-Fi takes part of it while it runs.
 const wireBytes = v => v.outs.reduce((a, o) => a + (within(o.leds, 0, lim().max_leds) ? o.leds * (oRgbw(v, o) ? 4 : 3) : 0), 0);
 const memText = b => Math.floor(b / 4) + ' RGBW or ' + Math.floor(b / 3) + ' RGB LEDs';
+// The setup Wi-Fi takes LED memory: say so only when the saved LED setup needs more than it leaves.
+function wifiNote(c) {
+  const L = lim(), bytes = (c.outputs || []).reduce((a, o) => a + o.leds * ((o.type || c.led_type) === 'rgbw' ? 4 : 3), 0);
+  show('ap-warn', bytes > L.led_bytes_wifi);
+  $('ap-warn').textContent = 'Your LED setup needs more memory than the setup Wi-Fi leaves: while it runs, and until the next restart, the outputs are limited to ' +
+    memText(L.led_bytes_wifi) + ' in total instead of ' + memText(L.led_bytes) + '.' +
+    (c.ap_boot ? ' With "On after each start" this applies after every start, also once the Wi-Fi has switched off again.' : '');
+}
 function renderMem(v) {
   const b = wireBytes(v), L = lim(), el = $('o-mem');
   let t = 'LED memory: ' + Math.round(b / L.led_bytes * 100) + ' % used (room for ' + memText(L.led_bytes) + ' on all outputs together).';
@@ -1080,6 +1148,10 @@ function fillAudio(c) {
   $('au_gain').value = a.gain; $('au_gate').value = a.gate;
   $('au_attack').value = a.attack; $('au_release').value = a.release;
   $('au_sens').value = a.sens;
+  $('au_low').value = a.low_hz; $('au_high').value = a.high_hz; $('au_range').value = a.range;
+  $('au_ctl').checked = a.ctl;
+  $('au_ctl_univ').value = c.protocol === 'sacn' ? a.ctl_univ + 1 : a.ctl_univ;
+  $('au_ctl_addr').value = a.ctl_addr;
   audioSync();
 }
 const auProto = () => ($('au-sacn').checked ? 'sacn' : 'artnet');
@@ -1089,6 +1161,13 @@ const MIC_PINS = [2, 13, 15, 32, 33, 34, 35, 36, 39], MIC_OUT = [2, 13, 15, 32, 
   pins.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = 'GPIO ' + n; $(id).appendChild(o); }));
 function audioSync() {
   const sacn = auProto() === 'sacn';
+  const on = $('au_on').checked;
+  show('au-mic-c', on); show('au-an-c', on);
+  if (!on) show('au-live', false);
+  show('au-ctl-f', $('au_ctl').checked);
+  // The control channels come in the input protocol (LED strip settings).
+  const inSacn = !!cfg && cfg.protocol === 'sacn';
+  $('au-ctl-univ-l').textContent = inSacn ? 'sACN universe (input protocol)' : 'Art-Net universe (input protocol)';
   $('au-univ-l').textContent = sacn ? 'sACN universe (1–32768)' : 'Art-Net universe (port-address)';
   $('au_univ').min = sacn ? 1 : 0; $('au_univ').max = sacn ? 32768 : 32767;
   show('au-prio-f', sacn);
@@ -1112,7 +1191,8 @@ $('af').onsubmit = async e => {
   if (busy) return;
   const sacn = auProto() === 'sacn';
   const checks = [['au_univ', sacn ? 1 : 0, sacn ? 32768 : 32767, 'universe'], ['au_prio', 1, 200, 'priority'],
-    ['au_gate', -90, -20, 'noise gate'], ['au_attack', 1, 500, 'attack'], ['au_release', 10, 3000, 'release']];
+    ['au_gate', -90, -20, 'noise gate'], ['au_attack', 1, 500, 'attack'], ['au_release', 10, 3000, 'release'],
+    ['au_low', 40, 500, 'low/mid crossover'], ['au_high', 1000, 8000, 'mid/high crossover'], ['au_range', 12, 48, 'range']];
   if (!$('au_agc').checked) checks.push(['au_gain', -20, 40, 'gain']);
   const bad = checks.filter(([id, lo, hi]) => !/^-?\d+$/.test(val(id)) || +val(id) < lo || +val(id) > hi);
   if (val('au_dest') && !IP.test(val('au_dest'))) bad.push(['au_dest', 0, 0, 'destination IP']);
@@ -1120,10 +1200,16 @@ $('af').onsubmit = async e => {
   if (bad.length) { msg('amsg', 'err', 'Please check: ' + bad.map(b => b[3]).join(', ') + '.'); $(bad[0][0]).focus(); return; }
   const used = [$('au_din').value, $('au_ws').value].concat($('au_mic').value === 'pdm' ? [] : [$('au_bclk').value]);
   if (new Set(used).size !== used.length) { msg('amsg', 'err', 'The mic pins must be different.'); $('au_din').focus(); return; }
+  const inSacn = !!cfg && cfg.protocol === 'sacn';
+  if ($('au_ctl').checked && !(/^\d+$/.test(val('au_ctl_univ')) && +val('au_ctl_univ') >= (inSacn ? 1 : 0) && +val('au_ctl_univ') <= (inSacn ? 32768 : 32767)))
+    { msg('amsg', 'err', 'Please check: control universe.'); $('au_ctl_univ').focus(); return; }
+  if ($('au_ctl').checked && !int('au_ctl_addr', 1, 502)) { msg('amsg', 'err', 'Please check: control start address (1–502).'); $('au_ctl_addr').focus(); return; }
   const body = {au_mic: $('au_mic').value, au_sel: $('au_sel').value, au_din: $('au_din').value, au_ws: $('au_ws').value,
     au_bclk: $('au_bclk').value, au_proto: auProto(), au_dest: val('au_dest'), au_univ: +val('au_univ') - (sacn ? 1 : 0), au_prio: val('au_prio'),
-    au_gate: val('au_gate'), au_attack: val('au_attack'), au_release: val('au_release'), au_sens: $('au_sens').value};
+    au_gate: val('au_gate'), au_attack: val('au_attack'), au_release: val('au_release'), au_sens: $('au_sens').value,
+    au_low: val('au_low'), au_high: val('au_high'), au_range: val('au_range')};
   if ($('au_on').checked) body.au_on = 1;
+  if ($('au_ctl').checked) Object.assign(body, {au_ctl: 1, au_ctl_univ: +val('au_ctl_univ') - (inSacn ? 1 : 0), au_ctl_addr: val('au_ctl_addr')});
   if ($('au_agc').checked) body.au_agc = 1; else body.au_gain = val('au_gain');
   setBusy(true); msg('amsg', 'info', 'Saving…');
   try {
@@ -1148,14 +1234,18 @@ async function audioPoll() {
   try {
     const a = await getJSON('/api/audio');
     const on = !!a.on;
-    show('au-live', on);
+    show('au-live', on && $('au_on').checked);
     const p = $('au-p');
     const st = !on ? ['Off', ''] : {fault: ['Mic fault', 'err'], clipping: ['Clipping', 'warn'], gated: ['Below gate', ''], active: ['Active', 'ok']}[a.status];
-    p.textContent = st[0]; p.className = 'pill ' + st[1];
+    p.textContent = st[0] + (on && a.control ? ' · console' : ''); p.className = 'pill ' + st[1];
     if (on) {
       $('au-db').textContent = a.db + ' dBFS';
       $('au-bpm').textContent = a.beat_ms ? Math.round(60000 / a.beat_ms) + ' BPM' : '—';
       $('au-act').textContent = {silence: 'Silence', noise: 'Noise', music: 'Music'}[a.activity];
+      const agc = a.params ? a.params.agc : cfg.audio.agc;
+      $('au-gain-l').textContent = agc ? 'AGC gain: level · low · mid · high' : 'Gain';
+      const dbs = g => (g > 0 ? '+' : '') + g;
+      $('au-gain').textContent = (agc ? a.gain.map(dbs).join(' · ') : dbs(a.gain[0])) + ' dB';
       $('au-lv').style.width = pct(a.level / 655.35);
       a.bands.forEach((b, i) => { const e = $('au-b' + i); e.style.width = pct(b / 2.55); e.classList.toggle('hit', a.onsets[i]); });
       $('au-ph').style.width = pct(a.phase / 2.55); $('au-ph').classList.toggle('hit', a.beat);
@@ -1302,9 +1392,24 @@ $('dbg-wifi').onclick = () => dbgPost('/debug/wifi', 'Start the setup Wi-Fi? It 
 $('dbg-bl').onclick = () => dbgPost('/install-bootloader', 'Write the bootloader built into this firmware? A power cut during the write (under a second) needs USB to recover.');
 $('dbg-panic').onclick = () => dbgPost('/debug/panic', 'Crash the firmware on purpose to test the crash log? The board restarts.');
 
+/* ---- Tabs: one part of the settings at a time; the address keeps it (#led) ---- */
+function tab(name) {
+  const tabs = Array.from(document.querySelectorAll('.tabs button')).filter(b => !b.hidden);
+  if (!tabs.some(b => b.dataset.tab === name)) name = tabs[0].dataset.tab;
+  tabs.forEach(b => b.setAttribute('aria-selected', b.dataset.tab === name));
+  document.querySelectorAll('.tab').forEach(t => { t.hidden = t.dataset.tab !== name; });
+  if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+  if (name === 'led' && !$('lf').hidden) renderLed();               // sizes need the visible tab
+}
+document.querySelectorAll('.tabs button').forEach(b => { b.onclick = () => tab(b.dataset.tab); });
+addEventListener('hashchange', () => tab(location.hash.slice(1)));
+
 (async () => {
   try {
-    fill(await getJSON('/api/config'));
+    const c = await getJSON('/api/config');
+    fill(c);
+    $('tab-audio').hidden = !c.audio;                                // firmware without audio
+    tab(location.hash.slice(1));
     show('body', true);
   } catch (e) {
     $('auth-t').textContent = e.status === 401 ? AUTH : 'Could not load the settings (' + (e.status ? 'HTTP ' + e.status : 'no answer from the board') + ').';

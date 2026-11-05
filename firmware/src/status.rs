@@ -20,7 +20,7 @@ pub struct Status {
     pub eth_present: bool,
     pub eth_link: bool,
     pub eth_addr: Option<(Ipv4Addr, u8)>,
-    /// How the Ethernet address was set: "DHCP", "static", "Art-Net fallback".
+    /// How the Ethernet address was set: "DHCP", "static", "fallback".
     pub eth_source: &'static str,
     /// Name of the setup Wi-Fi, once it runs.
     pub ap_ssid: Option<String>,
