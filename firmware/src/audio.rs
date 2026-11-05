@@ -16,7 +16,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::{
-    dma::{DmaDescriptor, DmaRxStreamBuf, aligned::DmaAlignedMut},
+    dma::DmaDescriptor,
     gpio::AnyPin,
     i2s::{
         master::{Channels, DataFormat, I2s, I2sRx, TdmConfig},
@@ -29,6 +29,9 @@ use log::{info, warn};
 use pixelcast_core::audio::{self as an, Analyzer, CONTROL_CHANNELS, Snapshot, Status};
 
 use crate::settings::{self, MIC_PINS, MicType};
+
+mod ring;
+use ring::Ring;
 
 /// I2S rate: 48 kHz keeps the SPH0645's clock (64 bits a frame) in its
 /// 2.048..4.096 MHz range; decimated by 3 to `an::RATE`.
@@ -73,15 +76,15 @@ pub struct Frame {
 pub static TX: Signal<CriticalSectionRawMutex, Frame> = Signal::new();
 
 /// The DMA ring: 2 KB in four 512-byte chunks (~10.7 ms of mono 32-bit
-/// audio, a chunk every ~2.7 ms), in the RAM the bootloader used (the main
-/// stack has no room to spare).
+/// audio, a chunk every ~2.7 ms) linked in a circle ([`ring`]), in the RAM
+/// the bootloader used (the main stack has no room to spare).
 const RING: usize = 2048;
 #[esp_hal::ram(reclaimed)]
 static mut RING_MEM: core::mem::MaybeUninit<[u32; RING / 4]> = core::mem::MaybeUninit::uninit();
 static mut DESCRIPTORS: [DmaDescriptor; 4] = [DmaDescriptor::EMPTY; 4];
 
 /// The ring; called once (`run` runs once).
-fn ring() -> Option<DmaRxStreamBuf> {
+fn ring() -> Option<Ring> {
     // SAFETY: only this call takes the two statics; the memory is zeroed
     // before a reference to it exists.
     let (buf, desc) = unsafe {
@@ -89,18 +92,25 @@ fn ring() -> Option<DmaRxStreamBuf> {
         core::ptr::write_bytes(p, 0, RING);
         (core::slice::from_raw_parts_mut(p, RING), &mut *core::ptr::addr_of_mut!(DESCRIPTORS))
     };
-    DmaRxStreamBuf::new(DmaAlignedMut::new(&mut desc[..]).ok()?, DmaAlignedMut::new(buf).ok()?).ok()
+    Ring::new(desc, buf)
 }
 
 /// The latest snapshot, for `/api/audio`; `None` while audio is off.
 static LAST: Mutex<CriticalSectionRawMutex, Cell<Option<Snapshot>>> = Mutex::new(Cell::new(None));
-/// Restarts of the capture after the DMA stopped (the ring ran full, or no
-/// data for 8 ms: it sometimes stops during network traffic), for
-/// `/api/audio`.
+/// Restarts of the capture after the DMA stopped (no data for 20 ms; the
+/// ring never ends, so only a DMA error stops it), for `/api/audio`.
 static RESTARTS: AtomicU32 = AtomicU32::new(0);
 
 pub fn restarts() -> u32 {
     RESTARTS.load(Ordering::Relaxed)
+}
+
+/// Times the task came so late that the DMA had filled the whole ring
+/// (~10.7 ms): up to that much audio lost. For `/api/audio`.
+static OVERRUNS: AtomicU32 = AtomicU32::new(0);
+
+pub fn overruns() -> u32 {
+    OVERRUNS.load(Ordering::Relaxed)
 }
 
 /// The longest the task was away between two wake-ups (µs), since the last
@@ -211,8 +221,6 @@ pub async fn run(pins: Mic) -> ! {
     let mut last_data = Instant::now();
     let mut next_fault_frame = Instant::now();
     let (mut acc, mut n_acc) = (0i32, 0u32);
-    // The last read found the ring full: the DMA has stopped.
-    let mut overflow = false;
     // Freeze holds this; the tap channel's last state (edges are taps).
     let mut held = Snapshot::empty(Status::Gated);
     let mut tapped = false;
@@ -223,7 +231,7 @@ pub async fn run(pins: Mic) -> ! {
         // the interrupt alone does not always wake the task).
         // `peek` gives the contiguous part only (up to the ring's end): with
         // more waiting, go on at once.
-        if !overflow && !more {
+        if !more {
             let _ = with_timeout(Duration::from_millis(3), transfer.wait_for_available_async()).await;
         }
         let gap = woke.elapsed().as_micros() as u32;
@@ -250,21 +258,19 @@ pub async fn run(pins: Mic) -> ! {
         // Whole samples, processed in place in the ring.
         let available = transfer.peek().len();
         let got = available - available % width;
-        let full = available >= RING;
+        if transfer.overrun() {
+            OVERRUNS.fetch_add(1, Ordering::Relaxed);
+        }
         if !audio.on {
             transfer.consume(got);
-            overflow = full;
             LAST.lock(|c| c.set(None));
             continue;
         }
-        // A stall: the ring ran full, or nothing came for 8 ms (three
-        // chunks; the DMA sometimes stops during network traffic).
-        if got == 0 && (overflow || last_data.elapsed() >= Duration::from_millis(8)) {
-            // Start it again: the audio has a gap of a few ms.
-            overflow = false;
-            let (rx, buf) = transfer.stop();
-            let (d, b) = buf.split();
-            let restarted = DmaRxStreamBuf::new(d, b).ok().and_then(|buf| rx.read(buf).ok());
+        // Nothing for 20 ms (seven chunks): the DMA has stopped after an
+        // error. Start it again.
+        if got == 0 && last_data.elapsed() >= Duration::from_millis(20) {
+            let (rx, ring) = transfer.stop();
+            let restarted = rx.read(ring).ok();
             let Some(t) = restarted else {
                 warn!("audio: I2S restart failed");
                 idle_fault().await
@@ -286,7 +292,6 @@ pub async fn run(pins: Mic) -> ! {
         // The first 250 ms: the mic settles after its clock starts.
         if started.elapsed() < Duration::from_millis(250) {
             transfer.consume(got);
-            overflow = full;
             continue;
         }
         for w in transfer.peek()[..got].chunks_exact(width) {
@@ -311,7 +316,6 @@ pub async fn run(pins: Mic) -> ! {
             }
         }
         transfer.consume(got);
-        overflow = full;
         more = transfer.available_bytes() >= width;
     }
 }

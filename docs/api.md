@@ -312,13 +312,15 @@ ctl_univ, ctl_addr}`.
   [l, m, h], "activity": "silence|noise|music", "gain" (dB in effect for
   level, low, mid, high: the AGC's, or the manual gain four times), "control" (the console's control channels count now),
   "params": {agc, gain, gate, attack, release, sens, band_gain} (in effect,
-  with the console's overrides), "restarts", "max_gap_us"}`, or
+  with the console's overrides), "restarts", "overruns", "max_gap_us"}`, or
   `{"on": false}`. `level`, `bands`, `onsets` and `beat` are the peak since
   the previous request (a poller then sees the hits between its requests).
-  `restarts`: times the capture restarted after its DMA stopped (each a gap
-  of about 8 ms in the audio); about one every two seconds at rest and
-  roughly one per HTTP request to the board. `max_gap_us`: the longest the
-  capture task was away since the previous request (the ring holds 10.7 ms).
+  `restarts`: times the capture restarted after its DMA stopped (no data
+  for 20 ms; should stay 0). `overruns`: times the capture task came back
+  after the ring (10.7 ms) had filled, losing the audio beyond that (one at
+  start-up; otherwise only under heavy HTTP load, e.g. 5 settings requests
+  a second). `max_gap_us`: the longest the capture task was away since the
+  previous request.
 - `POST /audio-beat` (login + `X-Requested-With`): sends one beat (channels
   4 and 9 for 80 ms), to check a console's mapping without music.
 

@@ -1025,6 +1025,7 @@ fn api_audio() -> String {
                     Activity::Music => "music",
                 })
                 .field("restarts", crate::audio::restarts())
+                .field("overruns", crate::audio::overruns())
                 .field("max_gap_us", crate::audio::take_max_gap_us())
                 .field("control", crate::audio::controlled());
             if let Some(p) = crate::audio::effective() {

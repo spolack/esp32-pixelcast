@@ -63,13 +63,13 @@
 - Settings page: band gains (now only from the control channels).
 - BPM and tempo confidence on channels 15–16; band edges adjustable.
 - Advertise the audio universe as an input port in ArtPollReply.
-- Audio capture: the I2S DMA stops about once per HTTP request (and every
-  two seconds at rest), although the task is never away longer than ~6 ms;
-  each stop costs ~8 ms of audio. Suspect: DMA contention with the W5500's
-  SPI DMA. Also: the "available" interrupt does not always wake the task
-  (a 3 ms timeout covers it). A larger ring needs RAM: the main stack is at
-  25 328 of the 24 576 bytes it must keep (752 spare; measured peak use
-  leaves ~3.9 KB free).
+- Audio capture: under heavy HTTP load (5 settings requests a second) the
+  network core sometimes keeps the capture task away up to ~11 ms, a little
+  longer than the 10.7 ms ring: an overrun, under 1 ms of audio lost (none
+  with the settings page's meter polling). Also: the "available" interrupt
+  does not always wake the task (a 3 ms timeout covers it). A larger ring
+  needs RAM: the main stack is at 24 816 of the 24 576 bytes it must keep
+  (measured peak use leaves ~3.9 KB free).
   Knobs: the receive task's buffers (`rx.rs`), the two heap regions
   (`main.rs`), the LED pool (`ledout.rs`, reclaimed RAM, 2.5 KB left there).
 - Mics: PDM and I2S with MCLK are built but untested on hardware (no such
