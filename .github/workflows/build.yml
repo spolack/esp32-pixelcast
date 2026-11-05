@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: tools/build.sh bootloader
         shell: bash
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bootloader
           path: dist/bootloader.bin
@@ -74,7 +74,7 @@ jobs:
           name: bootloader
           path: dist
       - run: tools/build.sh deps updater firmware
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: firmware
           path: |
@@ -103,7 +103,7 @@ jobs:
           restore-keys: pio-
       - run: pip install platformio
       - run: tools/build.sh wled
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wled
           path: dist/wled.bin
@@ -122,7 +122,7 @@ jobs:
           merge-multiple: true
       - run: tools/build.sh image
       - run: (cd dist && sha256sum *.bin > SHA256SUMS && cat SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: images
           path: dist/*
