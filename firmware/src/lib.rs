@@ -4,6 +4,7 @@ extern crate alloc;
 
 pub use pixelcast_core::{artnet, config, frame, http, json, led, mdns, merge, oled, sacn};
 
+pub mod audio;
 pub mod board;
 pub mod core1;
 pub mod crashlog;

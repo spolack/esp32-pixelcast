@@ -84,6 +84,107 @@ pub struct Settings {
     pub power_total_mw: u32,
     /// Strip voltage in 0.1 V, only to show the current per output.
     pub led_decivolts: u16,
+    /// The microphone as a DMX source.
+    pub audio: Audio,
+}
+
+/// The kind of microphone (or line-in ADC) on the I2S pins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicType {
+    /// 24/32-bit I2S: SPH0645, INMP441, ICS-43434, ICS-43432 …
+    I2s,
+    /// The same with a master clock on GPIO 3 (line-in ADCs like PCM1808).
+    I2sMclk,
+    /// PDM: SPM1423, MSM261 … (clock on the WS pin, no BCLK).
+    Pdm,
+}
+
+impl MicType {
+    pub fn key(self) -> &'static str {
+        match self {
+            MicType::I2s => "i2s",
+            MicType::I2sMclk => "i2s_mclk",
+            MicType::Pdm => "pdm",
+        }
+    }
+}
+
+/// The mic's wiring. Pins apply after a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mic {
+    pub kind: MicType,
+    /// The mic's SEL (L/R) pin is tied to 3.3 V (right channel) instead of GND.
+    pub sel_high: bool,
+    /// GPIOs: data in, word select (PDM: clock), bit clock (unused for PDM).
+    pub din: u8,
+    pub ws: u8,
+    pub bclk: u8,
+}
+
+impl Default for Mic {
+    fn default() -> Self {
+        // This board's header: SPH0645 with SEL to GND.
+        Mic { kind: MicType::I2s, sel_high: false, din: 32, ws: 15, bclk: 33 }
+    }
+}
+
+/// GPIOs free for the mic on this board; the first five can also drive
+/// a clock (34..39 are inputs only).
+pub const MIC_PINS: [u8; 9] = [2, 13, 15, 32, 33, 34, 35, 36, 39];
+pub const MIC_OUTPUT_PINS: [u8; 5] = [2, 13, 15, 32, 33];
+
+impl Mic {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !MIC_PINS.contains(&self.din) {
+            return Err("The mic data pin must be one of GPIO 2, 13, 15, 32, 33, 34, 35, 36, 39.");
+        }
+        if !MIC_OUTPUT_PINS.contains(&self.ws) {
+            return Err("The mic WS/clock pin must be one of GPIO 2, 13, 15, 32, 33.");
+        }
+        if self.kind != MicType::Pdm {
+            if !MIC_OUTPUT_PINS.contains(&self.bclk) {
+                return Err("The mic BCLK pin must be one of GPIO 2, 13, 15, 32, 33.");
+            }
+            if self.bclk == self.ws || self.bclk == self.din {
+                return Err("The mic pins must be different.");
+            }
+        }
+        if self.ws == self.din {
+            return Err("The mic pins must be different.");
+        }
+        Ok(())
+    }
+}
+
+/// The microphone's analysis, sent as a DMX universe (`crate::audio`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Audio {
+    pub on: bool,
+    pub mic: Mic,
+    /// How the audio universe is sent.
+    pub protocol: Protocol,
+    /// Unicast to this address; `None`: Art-Net broadcast, sACN multicast.
+    pub dest: Option<Ipv4Addr>,
+    /// Port-address (sACN universe = this + 1, as on the receive side).
+    pub universe: u16,
+    /// sACN priority, 1..=200.
+    pub priority: u8,
+    pub params: crate::audio::Params,
+}
+
+impl Default for Audio {
+    fn default() -> Self {
+        Audio {
+            on: false,
+            mic: Mic::default(),
+            protocol: Protocol::ArtNet,
+            dest: None,
+            // The default LED setup uses 0..=15.
+            universe: 16,
+            priority: 100,
+            params: crate::audio::Params::default(),
+        }
+    }
 }
 
 /// Behaviour when the input stops.
@@ -163,6 +264,7 @@ impl Default for Settings {
             power_out_mw: 0,
             power_total_mw: 0,
             led_decivolts: 50,
+            audio: Audio::default(),
         }
     }
 }
@@ -312,6 +414,7 @@ impl Settings {
                     "sacn" => Ok(next.protocol = Protocol::Sacn),
                     _ => Err("The protocol must be Art-Net or sACN."),
                 },
+                k if k.starts_with("au_") => apply_audio(&mut next.audio, k, &value),
                 k if output_key(k).is_some() => {
                     let (lane, field) = output_key(k).unwrap_or((0, ""));
                     let o = &mut next.outputs[lane];
@@ -372,6 +475,16 @@ impl Settings {
             if next.eth_mode == EthMode::Static && next.ip.is_unspecified() {
                 return Err("Set an IP address for static mode.");
             }
+            if form_has(form, "au_univ") && !form_has(form, "au_on") {
+                next.audio.on = false;
+            }
+            if form_has(form, "au_univ") && !form_has(form, "au_agc") {
+                next.audio.params.agc = false;
+            }
+            next.audio.mic.validate()?;
+            if next.audio.on && next.led_universes().any(|u| u == next.audio.universe) {
+                return Err("The audio universe is one the LED outputs receive: choose another.");
+            }
             next.timing.validate()?;
         } else if let Err(e) = next.timing.validate() {
             warn!("settings: stored LED timing invalid ({}); using the default", e);
@@ -416,6 +529,7 @@ impl Settings {
             power_out_mw,
             power_total_mw,
             led_decivolts,
+            audio,
         } = self;
         let mut s = String::new();
         let mut kv = |k: &str, v: &str| {
@@ -472,8 +586,98 @@ impl Settings {
         kv("power_out_mw", &power_out_mw.to_string());
         kv("power_total_mw", &power_total_mw.to_string());
         kv("led_volts_dv", &led_decivolts.to_string());
+        let Audio { on, mic, protocol, dest, universe, priority, params } = audio;
+        let Mic { kind, sel_high, din, ws, bclk } = mic;
+        let crate::audio::Params { agc, gain_db, gate_db, attack_ms, release_ms, sensitivity } = params;
+        kv("au_on", flag(*on));
+        kv("au_mic", kind.key());
+        kv("au_sel", if *sel_high { "vdd" } else { "gnd" });
+        kv("au_din", &din.to_string());
+        kv("au_ws", &ws.to_string());
+        kv("au_bclk", &bclk.to_string());
+        kv("au_proto", protocol.key());
+        kv("au_dest", &dest.map(|d| d.to_string()).unwrap_or_default());
+        kv("au_univ", &universe.to_string());
+        kv("au_prio", &priority.to_string());
+        kv("au_agc", flag(*agc));
+        kv("au_gain", &gain_db.to_string());
+        kv("au_gate", &gate_db.to_string());
+        kv("au_attack", &attack_ms.to_string());
+        kv("au_release", &release_ms.to_string());
+        kv("au_sens", &sensitivity.to_string());
         s
     }
+
+    /// The port-addresses the LED outputs receive.
+    pub fn led_universes(&self) -> impl Iterator<Item = u16> + '_ {
+        self.outputs
+            .iter()
+            .flat_map(|o| (0..o.universes(self.led_type) as u16).map(move |k| o.universe.wrapping_add(k) & 0x7fff))
+    }
+}
+
+/// One `au_*` form field.
+fn apply_audio(a: &mut Audio, key: &str, value: &str) -> Result<(), &'static str> {
+    let p = &mut a.params;
+    let pin = |v: &str| v.parse::<u8>().ok().filter(|n| MIC_PINS.contains(n)).ok_or("Mic pins must be one of GPIO 2, 13, 15, 32, 33, 34, 35, 36, 39.");
+    match key {
+        "au_on" => a.on = value == "1",
+        "au_mic" => {
+            a.mic.kind = match value {
+                "i2s" => MicType::I2s,
+                "i2s_mclk" => MicType::I2sMclk,
+                "pdm" => MicType::Pdm,
+                _ => return Err("The mic type must be I2S, I2S with MCLK or PDM."),
+            }
+        }
+        "au_sel" => a.mic.sel_high = value == "vdd",
+        "au_din" => a.mic.din = pin(value)?,
+        "au_ws" => a.mic.ws = pin(value)?,
+        "au_bclk" => a.mic.bclk = pin(value)?,
+        "au_proto" => {
+            a.protocol = match value {
+                "artnet" => Protocol::ArtNet,
+                "sacn" => Protocol::Sacn,
+                _ => return Err("The audio protocol must be Art-Net or sACN."),
+            }
+        }
+        "au_dest" if value.is_empty() => a.dest = None,
+        "au_dest" => match value.parse() {
+            Ok(ip) if usable_ip(ip) => a.dest = Some(ip),
+            _ => return Err("The audio destination must be a unicast address, or empty."),
+        },
+        "au_univ" => match value.parse::<u16>() {
+            Ok(u) if u <= 0x7fff => a.universe = u,
+            _ => return Err("The audio universe must be 0 to 32767."),
+        },
+        "au_prio" => match value.parse::<u8>() {
+            Ok(v @ 1..=200) => a.priority = v,
+            _ => return Err("The sACN priority must be 1 to 200."),
+        },
+        "au_agc" => p.agc = value == "1",
+        "au_gain" => match value.parse::<i8>() {
+            Ok(v @ -20..=40) => p.gain_db = v,
+            _ => return Err("The audio gain must be -20 to 40 dB."),
+        },
+        "au_gate" => match value.parse::<i8>() {
+            Ok(v @ -90..=-20) => p.gate_db = v,
+            _ => return Err("The noise gate must be -90 to -20 dBFS."),
+        },
+        "au_attack" => match value.parse::<u16>() {
+            Ok(v @ 1..=500) => p.attack_ms = v,
+            _ => return Err("The attack must be 1 to 500 ms."),
+        },
+        "au_release" => match value.parse::<u16>() {
+            Ok(v @ 10..=3000) => p.release_ms = v,
+            _ => return Err("The release must be 10 to 3000 ms."),
+        },
+        "au_sens" => match value.parse::<u8>() {
+            Ok(v @ 1..=10) => p.sensitivity = v,
+            _ => return Err("The beat sensitivity must be 1 to 10."),
+        },
+        _ => {}
+    }
+    Ok(())
 }
 
 /// `o1_leds` … `o4_offset` → (output index, field).
@@ -635,6 +839,7 @@ impl Changes {
             power_out_mw,
             power_total_mw,
             led_decivolts: _, // display only
+            audio: _,         // read live (the audio task, each frame)
         } = new;
         Changes {
             eth: old.eth_mode != *eth_mode
@@ -716,6 +921,22 @@ mod tests {
         s.power_out_mw = 60_000;
         s.power_total_mw = 480_000;
         s.led_decivolts = 120;
+        s.audio = Audio {
+            on: true,
+            mic: Mic { kind: MicType::Pdm, sel_high: true, din: 34, ws: 13, bclk: 2 },
+            protocol: Protocol::Sacn,
+            dest: Some(Ipv4Addr::new(10, 1, 2, 9)),
+            universe: 300,
+            priority: 150,
+            params: crate::audio::Params {
+                agc: false,
+                gain_db: 12,
+                gate_db: -50,
+                attack_ms: 20,
+                release_ms: 800,
+                sensitivity: 8,
+            },
+        };
         s
     }
 
@@ -745,6 +966,30 @@ mod tests {
         let with_pw2 = alloc::format!("{form}&password2=secret%20pass%3D1");
         strict.apply_form(&with_pw2, true).unwrap();
         assert_eq!(strict, c);
+    }
+
+    #[test]
+    fn audio_universe_must_not_be_an_led_universe() {
+        // The default LED setup receives 0..=15.
+        let mut s = Settings::default();
+        assert!(s.apply_form("au_on=1&au_univ=3", true).is_err());
+        assert!(!s.audio.on);
+        s.apply_form("au_on=1&au_univ=16&au_dest=2.0.0.1", true).unwrap();
+        assert!(s.audio.on && s.audio.universe == 16);
+        // Off is allowed on any universe; a full audio form without au_on is off.
+        s.apply_form("au_univ=3&au_agc=1", true).unwrap();
+        assert!(!s.audio.on);
+    }
+
+    #[test]
+    fn mic_pins_are_checked() {
+        let mut s = Settings::default();
+        assert!(s.apply_form("au_din=12", true).is_err()); // an LED output
+        assert!(s.apply_form("au_ws=34", true).is_err()); // input only
+        assert!(s.apply_form("au_din=13&au_ws=13", true).is_err());
+        s.apply_form("au_mic=pdm&au_din=34&au_ws=13&au_bclk=13", true).unwrap(); // PDM has no BCLK
+        assert_eq!((s.audio.mic.kind, s.audio.mic.din, s.audio.mic.ws), (MicType::Pdm, 34, 13));
+        assert!(s.apply_form("au_mic=i2s", true).is_err()); // BCLK 13 = WS 13
     }
 
     #[test]

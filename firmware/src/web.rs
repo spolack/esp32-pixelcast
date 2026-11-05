@@ -310,6 +310,10 @@ async fn handle(sock: &mut TcpSocket<'_>, ctx: &'static WebCtx, portal_host: Opt
             json(sock, &api_artnet(head.query)).await;
             return After::Nothing;
         }
+        Route::Audio => {
+            json(sock, &api_audio()).await;
+            return After::Nothing;
+        }
         _ => {}
     }
 
@@ -354,6 +358,11 @@ async fn handle(sock: &mut TcpSocket<'_>, ctx: &'static WebCtx, portal_host: Opt
                 Ok(msg) => text(sock, "200 OK", msg).await,
                 Err(msg) => text(sock, "409 Conflict", msg).await,
             }
+            After::Nothing
+        }
+        Route::AudioBeat => {
+            crate::audio::simulate_beat();
+            text(sock, "200 OK", "Beat sent.\n").await;
             After::Nothing
         }
         Route::DualbootLog => {
@@ -768,9 +777,13 @@ async fn save_settings(sock: &mut TcpSocket<'_>, ctx: &WebCtx, body: &[u8]) {
         return;
     }
     let ap = settings::Changes::between(&old, &new).ap && status::get().ap_ssid.is_some();
+    // The capture set I2S up once: another mic type or pins need a restart.
+    let mic = crate::audio::running_mic().is_some_and(|m| m != new.audio.mic) && old.audio.mic != new.audio.mic;
     settings::set_current(new);
     let msg = if ap {
         "Saved and applied. The setup Wi-Fi changed: devices on it need to reconnect.\n"
+    } else if mic {
+        "Saved. The microphone type and pins apply after a restart.\n"
     } else {
         "Saved and applied.\n"
     };
@@ -979,6 +992,40 @@ async fn send_page(sock: &mut TcpSocket<'_>, gz: &'static [u8]) {
 
 async fn json(sock: &mut TcpSocket<'_>, body: &str) {
     respond(sock, "200 OK", "", "application/json", body).await;
+}
+
+/// `GET /api/audio`: the microphone's latest values (`on: false` while audio
+/// is off).
+fn api_audio() -> String {
+    use pixelcast_core::audio::{Activity, Status};
+    json::object(|o| match crate::audio::snapshot() {
+        None => {
+            o.field("on", false);
+        }
+        Some(s) => {
+            o.field("on", true)
+                .field("status", match s.status {
+                    Status::Fault => "fault",
+                    Status::Gated => "gated",
+                    Status::Active => "active",
+                    Status::Clipping => "clipping",
+                })
+                .field("db", s.input_db)
+                .field("level", s.level)
+                .field("peak", s.peak)
+                .field("beat", s.beat)
+                .field("phase", s.phase)
+                .field("beat_ms", s.beat_ms)
+                .field("bands", s.bands)
+                .field("onsets", s.onsets)
+                .field("activity", match s.activity {
+                    Activity::Silence => "silence",
+                    Activity::Noise => "noise",
+                    Activity::Music => "music",
+                })
+                .field("restarts", crate::audio::restarts());
+        }
+    })
 }
 
 fn api_status(ctx: &WebCtx) -> String {
@@ -1216,6 +1263,26 @@ fn api_config(ctx: &WebCtx) -> String {
             .field("interp", s.interpolate)
             .field("dither", s.dither)
             .field("fast_flash", s.fast_flash)
+            .obj("audio", |o| {
+                let a = &s.audio;
+                o.field("on", a.on)
+                    .field("mic", a.mic.kind.key())
+                    .field("sel", if a.mic.sel_high { "vdd" } else { "gnd" })
+                    .field("din", a.mic.din)
+                    .field("ws", a.mic.ws)
+                    .field("bclk", a.mic.bclk)
+                    .field("mic_pending", crate::audio::running_mic().is_some_and(|m| m != a.mic))
+                    .field("proto", a.protocol.key())
+                    .field("dest", a.dest.map(|d| alloc::string::ToString::to_string(&d)).unwrap_or_default())
+                    .field("univ", a.universe)
+                    .field("prio", a.priority)
+                    .field("agc", a.params.agc)
+                    .field("gain", a.params.gain_db)
+                    .field("gate", a.params.gate_db)
+                    .field("attack", a.params.attack_ms)
+                    .field("release", a.params.release_ms)
+                    .field("sens", a.params.sensitivity);
+            })
             .field("merge", s.merge.key())
             .arr("presets", |a| {
                 for p in settings::parse_presets(&s.timing_presets).iter().flat_map(|l| l.iter()) {

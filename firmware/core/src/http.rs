@@ -199,9 +199,11 @@ pub enum Route {
     UpdateInPlace,
     DualbootLog,
     DualbootReset,
+    Audio,
+    AudioBeat,
 }
 
-const ROUTES: [(&str, &str, Route); 23] = [
+const ROUTES: [(&str, &str, Route); 25] = [
     ("GET", "/", Route::Index),
     ("GET", "/artnet", Route::ArtnetPage),
     ("GET", "/api/status", Route::Status),
@@ -211,6 +213,7 @@ const ROUTES: [(&str, &str, Route); 23] = [
     ("GET", "/api/config", Route::Config),
     ("GET", "/api/backup", Route::Backup),
     ("GET", "/api/dualboot-log", Route::DualbootLog),
+    ("GET", "/api/audio", Route::Audio),
     ("POST", "/config", Route::SaveConfig),
     ("POST", "/update", Route::Update),
     ("POST", "/test", Route::Test),
@@ -225,6 +228,7 @@ const ROUTES: [(&str, &str, Route); 23] = [
     ("POST", "/install-bootloader", Route::InstallBootloader),
     ("POST", "/update-in-place", Route::UpdateInPlace),
     ("POST", "/dualboot-reset", Route::DualbootReset),
+    ("POST", "/audio-beat", Route::AudioBeat),
 ];
 
 impl Route {
@@ -234,7 +238,7 @@ impl Route {
 
     /// Served without the login (read-only pages and status).
     pub fn public(self) -> bool {
-        matches!(self, Route::Index | Route::ArtnetPage | Route::Status | Route::Leds | Route::ArtnetData)
+        matches!(self, Route::Index | Route::ArtnetPage | Route::Status | Route::Leds | Route::ArtnetData | Route::Audio)
     }
 }
 

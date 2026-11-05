@@ -1,6 +1,7 @@
 //! Receiving Art-Net/sACN: the receive task (ArtPoll, ArtAddress, sACN priorities), the handler shared with the Ethernet fast path (merge, statistics, live view), and the fast path itself.
 
 use super::*;
+use embassy_futures::select::{Either3, select3};
 
 /// Art-Net statistics window (the live page shows each window).
 const REPORT_INTERVAL: Duration = Duration::from_secs(1);
@@ -155,11 +156,17 @@ pub(crate) async fn artnet_task(
     rx_buf: &'static mut [u8],
 ) {
     const TICK: Duration = Duration::from_millis(250);
-    // Room for the ArtPollReplies of 16 universes (4 × 239 bytes).
-    let mut tx_meta = [PacketMetadata::EMPTY; 4];
-    let mut tx_buf = [0u8; 1024];
+    // Room for the ArtPollReplies of 16 universes (4 × 239 bytes) and the
+    // audio packets (sACN: 638 bytes). smoltcp keeps each packet in one
+    // piece, so the ring must hold twice the largest one, or a packet that
+    // does not fit before the wrap point never fits.
+    let mut tx_meta = [PacketMetadata::EMPTY; 5];
+    let mut tx_buf = [0u8; 2 * 640];
     let mut polls_answered = 0u16;
-    let mut buf = [0u8; 1500];
+    // The largest packet through this socket is an sACN data packet (638
+    // bytes; Art-Net DMX on Ethernet takes the fast path, 530 bytes on the
+    // setup Wi-Fi). Anything longer is dropped.
+    let mut buf = [0u8; 704];
     let mut window_start = Instant::now();
     let mut windows = 0u32;
 
@@ -202,8 +209,12 @@ pub(crate) async fn artnet_task(
         let mut last_poller: Option<embassy_net::IpAddress> = None;
         let mut repeat_poll: Option<(embassy_net::IpEndpoint, Instant)> = None;
         loop {
-            match select(socket.recv_from(&mut buf), Timer::at(next_tick)).await {
-                Either::First(Ok((len, meta))) => {
+            // The audio universe first: under a burst the receive branch is
+            // always ready and would starve it.
+            let event = select3(esp32_pixelcast::audio::TX.wait(), socket.recv_from(&mut buf), Timer::at(next_tick)).await;
+            match event {
+                Either3::First(frame) => send_audio(&mut socket, stack, &frame).await,
+                Either3::Second(Ok((len, meta))) => {
                     // sACN is translated into the Art-Net view (port-address
                     // from 0) so the LED output and the statistics see one
                     // kind of packet.
@@ -259,8 +270,9 @@ pub(crate) async fn artnet_task(
                     // buffer faster than they are handled here.
                     embassy_futures::yield_now().await;
                 }
-                Either::First(Err(e)) => warn!("receive: error: {:?}", e),
-                Either::Second(()) => {}
+                Either3::Second(Err(embassy_net::udp::RecvError::Truncated)) => {}
+                Either3::Second(Err(e)) => warn!("receive: error: {:?}", e),
+                Either3::Third(()) => {}
             }
             if let Some((to, at)) = repeat_poll
                 && Instant::now() >= at
@@ -302,6 +314,64 @@ pub(crate) async fn artnet_task(
         for g in groups.iter() {
             let _ = stack.leave_multicast_group(embassy_net::Ipv4Address::from(*g));
         }
+    }
+}
+
+/// Sends one frame of the audio universe from the receive socket (Art-Net
+/// from 6454, as the protocol expects), with the settings in effect: unicast
+/// to `dest`, else Art-Net broadcast or the sACN universe's multicast group.
+async fn send_audio(socket: &mut UdpSocket<'_>, stack: Stack<'static>, frame: &esp32_pixelcast::audio::Frame) {
+    let a = settings::with(|s| s.audio);
+    if !a.on {
+        return;
+    }
+    let sacn_universe = a.universe + 1;
+    let (to, port) = match (a.protocol, a.dest) {
+        (_, Some(d)) => (d, if a.protocol == settings::Protocol::Sacn { sacn::PORT } else { artnet::PORT }),
+        (settings::Protocol::Sacn, None) => (sacn::multicast_group(sacn_universe).into(), sacn::PORT),
+        (settings::Protocol::ArtNet, None) => match stack.config_v4() {
+            Some(c) => (c.address.broadcast().unwrap_or(embassy_net::Ipv4Address::BROADCAST), artnet::PORT),
+            None => return,
+        },
+    };
+    let to = embassy_net::IpEndpoint::new(embassy_net::IpAddress::Ipv4(to), port);
+    // Never hold up the receive task: a frame that cannot go out within
+    // 50 ms is dropped (the next one follows 23 ms later).
+    let send = async {
+        match a.protocol {
+        settings::Protocol::ArtNet => {
+            socket
+                .send_to_with(artnet::DMX_PACKET_LEN, to, |b| {
+                    (artnet::write_dmx(b, a.universe, frame.sequence, &frame.channels), ())
+                })
+                .await
+            }
+            settings::Protocol::Sacn => {
+            // Component id: a fixed prefix and the MAC; source name: the
+            // device name and "audio".
+            let mut cid = *b"pixelcast\0\0\0\0\0\0\0";
+            cid[10..16].copy_from_slice(&board::base_mac());
+            let mut name = heapless::String::<64>::new();
+            settings::with(|s| {
+                if s.name.is_empty() {
+                    let m = board::base_mac();
+                    let _ = core::fmt::write(&mut name, format_args!("ArtnetNode-{:02X}{:02X} audio", m[4], m[5]));
+                } else {
+                    let _ = core::fmt::write(&mut name, format_args!("{} audio", s.name));
+                }
+            });
+            socket
+                .send_to_with(sacn::DATA_PACKET_LEN, to, |b| {
+                    (sacn::write_data(b, &cid, &name, a.priority, frame.sequence, sacn_universe, &frame.channels), ())
+                })
+                .await
+            }
+        }
+    };
+    match with_timeout(Duration::from_millis(50), send).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => warn!("audio: send to {} failed: {:?}", to, e),
+        Err(_) => warn!("audio: send to {} timed out; frame dropped", to),
     }
 }
 

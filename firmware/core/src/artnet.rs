@@ -168,6 +168,27 @@ pub fn parse(p: &[u8]) -> Option<Packet<'_>> {
     }
 }
 
+/// Length of an ArtDmx packet with 512 channels.
+pub const DMX_PACKET_LEN: usize = DMX_HEADER_LEN + DMX_CHANNELS;
+
+/// Writes an ArtDmx packet for port-address `universe` (sequence 1..=255;
+/// 0 turns sequencing off) into `p`: 512 channels, `channels` first and
+/// the rest 0. Returns its length ([`DMX_PACKET_LEN`]); `p` must hold it.
+pub fn write_dmx(p: &mut [u8], universe: u16, sequence: u8, channels: &[u8]) -> usize {
+    let p = &mut p[..DMX_PACKET_LEN];
+    p.fill(0);
+    p[..8].copy_from_slice(ID);
+    p[8..10].copy_from_slice(&OP_DMX.to_le_bytes());
+    p[10..12].copy_from_slice(&14u16.to_be_bytes());
+    p[12] = sequence;
+    p[14] = (universe & 0xff) as u8;
+    p[15] = ((universe >> 8) & 0x7f) as u8;
+    p[16..18].copy_from_slice(&(DMX_CHANNELS as u16).to_be_bytes());
+    let n = channels.len().min(DMX_CHANNELS);
+    p[DMX_HEADER_LEN..DMX_HEADER_LEN + n].copy_from_slice(&channels[..n]);
+    DMX_PACKET_LEN
+}
+
 /// Universes 0..TRACKED get per-universe counters; higher ones are only
 /// counted in total.
 pub const TRACKED: usize = 64;
@@ -447,6 +468,15 @@ pub fn poll_reply(out: &mut [u8; POLL_REPLY_LEN], node: &NodeInfo<'_>, bind: &Bi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dmx_packet_parses() {
+        let mut p = [0xAAu8; DMX_PACKET_LEN + 4];
+        assert_eq!(write_dmx(&mut p, 0x1234, 42, &[7, 8]), DMX_PACKET_LEN);
+        let mut data = [0u8; DMX_CHANNELS];
+        data[..2].copy_from_slice(&[7, 8]);
+        assert_eq!(parse(&p), Some(Packet::Dmx { universe: 0x1234, sequence: 42, data: &data[..] }));
+    }
 
     /// An Ethernet/IPv4/UDP frame to port `port` with `payload`.
     fn udp_frame(dst: [u8; 6], port: u16, payload: &[u8]) -> alloc::vec::Vec<u8> {

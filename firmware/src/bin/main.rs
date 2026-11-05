@@ -299,6 +299,27 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(mdns_task(eth).unwrap());
     spawner.spawn(settings_saver_task(flash).unwrap());
     spawner.spawn(status_led_task(status_led).unwrap());
+    // The microphone (waits until audio is switched on in the settings).
+    spawner.spawn(
+        audio_task(esp32_pixelcast::audio::Mic {
+            i2s: peripherals.I2S0,
+            dma: peripherals.DMA_I2S0,
+            mclk: peripherals.GPIO3,
+            // settings::MIC_PINS
+            pins: [
+                Some(peripherals.GPIO2.into()),
+                Some(peripherals.GPIO13.into()),
+                Some(peripherals.GPIO15.into()),
+                Some(peripherals.GPIO32.into()),
+                Some(peripherals.GPIO33.into()),
+                Some(peripherals.GPIO34.into()),
+                Some(peripherals.GPIO35.into()),
+                Some(peripherals.GPIO36.into()),
+                Some(peripherals.GPIO39.into()),
+            ],
+        })
+        .unwrap(),
+    );
     // Optional OLED on the I2C header (GPIO 21 SDA, 22 SCL).
     match esp_hal::i2c::master::I2c::new(
         peripherals.I2C0,
@@ -381,6 +402,11 @@ async fn main(spawner: Spawner) -> ! {
     };
     spawner.spawn(eth_link_task(eth).unwrap());
     eth_addressing(eth, mac).await
+}
+
+#[embassy_executor::task]
+async fn audio_task(mic: esp32_pixelcast::audio::Mic) -> ! {
+    esp32_pixelcast::audio::run(mic).await
 }
 
 #[embassy_executor::task]

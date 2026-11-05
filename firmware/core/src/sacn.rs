@@ -1,7 +1,7 @@
-//! sACN (ANSI E1.31) packet parsing.
+//! sACN (ANSI E1.31) packets.
 //!
-//! Only what a receiving node needs: data packets (DMX512 with start code 0)
-//! and synchronization packets. sACN numbers universes from 1; this firmware
+//! Parsing what a receiving node needs (data packets, DMX512 with start
+//! code 0, and synchronization packets) and building data packets. sACN numbers universes from 1; this firmware
 //! uses Art-Net's port-address (from 0) everywhere, so sACN universe `u`
 //! feeds port-address `u - 1` (the usual convention: sACN 1 = Art-Net 0).
 
@@ -33,6 +33,51 @@ pub enum Packet<'a> {
     },
     /// Synchronization packet for `sync_universe`.
     Sync { sync_universe: u16 },
+}
+
+/// Length of a data packet with 512 slots.
+pub const DATA_PACKET_LEN: usize = DATA_START + 512;
+
+/// Writes a data packet for sACN `universe` (1..=63999) into `p`: 512
+/// slots, `slots` first and the rest 0. `cid` is the source's component id,
+/// `name` its source name (up to 63 bytes). Returns its length
+/// ([`DATA_PACKET_LEN`]); `p` must hold it.
+pub fn write_data(
+    p: &mut [u8],
+    cid: &[u8; 16],
+    name: &str,
+    priority: u8,
+    sequence: u8,
+    universe: u16,
+    slots: &[u8],
+) -> usize {
+    // Flags 0x7 and the length of the PDU from `at` to the end.
+    fn flags_len(p: &mut [u8], at: usize) {
+        let len = (DATA_PACKET_LEN - at) as u16;
+        p[at..at + 2].copy_from_slice(&(0x7000 | len).to_be_bytes());
+    }
+    let p = &mut p[..DATA_PACKET_LEN];
+    p.fill(0);
+    p[0..2].copy_from_slice(&0x0010u16.to_be_bytes());
+    p[4..16].copy_from_slice(ACN_ID);
+    flags_len(p, 16);
+    p[18..22].copy_from_slice(&VECTOR_ROOT_DATA.to_be_bytes());
+    p[22..38].copy_from_slice(cid);
+    flags_len(p, 38);
+    p[40..44].copy_from_slice(&VECTOR_FRAMING_DATA.to_be_bytes());
+    let n = name.len().min(63);
+    p[44..44 + n].copy_from_slice(&name.as_bytes()[..n]);
+    p[108] = priority;
+    p[111] = sequence;
+    p[113..115].copy_from_slice(&universe.to_be_bytes());
+    flags_len(p, 115);
+    p[117] = VECTOR_DMP_SET_PROPERTY;
+    p[118] = 0xa1;
+    p[121..123].copy_from_slice(&1u16.to_be_bytes());
+    p[123..125].copy_from_slice(&513u16.to_be_bytes());
+    let n = slots.len().min(512);
+    p[DATA_START..DATA_START + n].copy_from_slice(&slots[..n]);
+    DATA_PACKET_LEN
 }
 
 fn be16(p: &[u8], at: usize) -> u16 {
@@ -217,6 +262,28 @@ mod tests {
         p[123..125].copy_from_slice(&((slots.len() + 1) as u16).to_be_bytes());
         p[DATA_START..].copy_from_slice(slots);
         p
+    }
+
+    #[test]
+    fn built_packet_parses() {
+        let mut p = [0xAAu8; DATA_PACKET_LEN];
+        assert_eq!(write_data(&mut p, &[1; 16], "pixelcast audio", 100, 9, 17, &[3]), DATA_PACKET_LEN);
+        let mut data = [0u8; 512];
+        data[0] = 3;
+        assert_eq!(&p[44..59], b"pixelcast audio");
+        assert_eq!(be16(&p, 16) & 0x0fff, (DATA_PACKET_LEN - 16) as u16);
+        assert_eq!(
+            parse(&p),
+            Some(Packet::Data {
+                universe: 17,
+                priority: 100,
+                sequence: 9,
+                sync_universe: 0,
+                preview: false,
+                terminated: false,
+                data: &data[..],
+            })
+        );
     }
 
     #[test]

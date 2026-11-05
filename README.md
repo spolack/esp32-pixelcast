@@ -44,6 +44,7 @@ carrier: ESP32-DevKitC-32D, W5500, 74HCT245, 128x32 OLED. Tested on V2.2.
 | LED outputs 1–4 | 12, 14, 27, 26 |
 | 74HCT245 output enable (driven low) | 25 |
 | Status LED (WS2812) | 16 |
+| Microphone (default SPH0645, SEL to GND) DOUT / LRCL / BCLK | 32 / 15 / 33 (configurable) |
 | W5500 SCLK / MISO / MOSI / CS / INT | 18 / 19 / 23 / 5 / 4 |
 | OLED SDA / SCL | 21 / 22 |
 | BOOT button | 0 |
@@ -75,6 +76,9 @@ on a trusted network.
   ([`docs/api.md`](docs/api.md)).
 - DHCP with Art-Net 2.x.y.z fallback, or static; mDNS; setup Wi-Fi access
   point with captive portal.
+- Microphone as a DMX source: level, beat, beat phase and three bands as
+  one Art-Net or sACN universe for a console; I2S, I2S with MCLK (line-in)
+  and PDM mics on configurable pins ([`docs/api.md`](docs/api.md)).
 - Updates over Ethernet (1 MB in 15–30 s) with trial boot, rollback,
   confirmation and crash log; in-place updates keep the other slot
   ([`updater/README.md`](updater/README.md)).

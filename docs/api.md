@@ -24,7 +24,9 @@ icons or favicons (use inline SVG and `<link rel="icon" href="data:,">`).
 - The board serves two connections at a time per network (`web::SOCKETS`).
   A third parallel request can fail with a connection reset. Scripts send
   requests one after another (a small request queue in common.js), retry a
-  failed GET once or twice after ~300 ms, and poll at most twice per second.
+  failed GET once or twice after ~300 ms, and poll at most twice per second
+  (exception: the audio meter polls `/api/audio` five times a second while
+  it is shown).
 - Responses are small; keep each page (after inlining) well under 30 KB.
 - No internet access: the board is often reached on its own Wi-Fi
   (192.168.4.1), also from Android's captive-portal "sign in" window (a
@@ -229,6 +231,85 @@ password; served as a download (`Content-Disposition`).
 `pattern=off|rainbow|chase|solid`, for solid also `color=rrggbb` and
 `white=0..255`. A pattern owns the outputs (Art-Net/sACN ignored) until
 `off` or 30 minutes.
+
+## Audio: the microphone as a DMX source
+A microphone (or line-in ADC) on I2S0 is analysed on the board and sent as
+one DMX universe, 44 times a second, also during silence. It does not
+change the LED outputs: the console or software decides what to do with it.
+Off by default.
+
+Microphones (`au_mic`), sampled at 48 kHz, one slot:
+
+| Type | For | Pins |
+|---|---|---|
+| `i2s` (default) | 24/32-bit I2S mics: SPH0645, INMP441, ICS-43434, ICS-43432 … | data, WS (LRCL), BCLK |
+| `i2s_mclk` | the same plus a master clock (256 × 48 kHz) on GPIO 3, for line-in ADCs such as PCM1808 | as `i2s`, MCLK on GPIO 3 |
+| `pdm` | PDM mics: SPM1423, MSM261 … | data, clock (on the WS pin) |
+
+Pins are chosen from the board's free GPIOs: data from 2, 13, 15, 32, 33,
+34, 35, 36, 39; WS/clock and BCLK from 2, 13, 15, 32, 33 (34–39 are
+inputs only). Default: SPH0645 on data 32, WS 15, BCLK 33, SEL to GND.
+`au_sel` is the mic's SEL (L/R) pin: `gnd` (left) or `vdd` (right). MCLK
+can only be GPIO 0, 1 or 3 on the ESP32; 0 is BOOT and 1 the serial log
+here, so it is 3 (the serial console loses its RX line). Type and pins apply
+after a restart (`/api/config` `audio.mic_pending` until then); everything
+else applies at once. Not supported: codecs that need an I2C setup (ES7243,
+ES8388, WM8978) and analog mics.
+
+Analysis: level (attack/release), three bands (low < 150 Hz, mid, high
+> 2 kHz), onsets per band, beat from the low band (60–200 BPM) with a phase
+ramp, activity, clipping and mic faults. With AGC each value follows its
+own recent peak (falls 6 dB/s, 30 dB window); without, a 48 dB window
+below 0 dBFS after the gain. Below the noise gate all values are 0.
+
+Channel map (channels 1–16; 17–512 are 0):
+
+| Ch | Value |
+|---|---|
+| 1–2 | level, 16-bit (coarse, fine) |
+| 3 | level peak hold (falls over 1 s) |
+| 4 | beat: 255 for 80 ms, else 0 |
+| 5 | beat phase: 0→255 over each beat (runs on at the tempo for up to 4 beats, 0 without a tempo) |
+| 6–8 | low, mid, high |
+| 9–11 | onset low, mid, high: 255 for 80 ms |
+| 12 | activity: 0 silence, 128 sound without a steady beat, 255 music |
+| 13 | input level: 0 = −96 dBFS or less, 255 = 0 dBFS (before gain) |
+| 14 | status: 64 mic fault (values 0), 128 below the gate, 192 active, 255 clipping |
+| 15–16 | 0 (reserved) |
+
+Sending: Art-Net (ArtDmx from UDP 6454; unicast to `au_dest`, else
+broadcast on the board's network) or sACN (unicast, else multicast
+239.255.x.y; priority `au_prio`, source name "<device name> audio"). The
+universe is a port-address as everywhere here (sACN universe = it + 1) and
+must not be one the LED outputs receive.
+
+Settings (`POST /config`): `au_mic` (`i2s`|`i2s_mclk`|`pdm`), `au_sel`
+(`gnd`|`vdd`), `au_din`, `au_ws`, `au_bclk` (GPIO numbers as above; after a
+restart), `au_on` (send `1` when on), `au_proto`
+(`artnet`|`sacn`), `au_dest` (IP or empty), `au_univ` (0–32767), `au_prio`
+(1–200), `au_agc` (send `1` when on), `au_gain` (−20–40 dB, without AGC),
+`au_gate` (−90 to −20 dBFS), `au_attack` (1–500 ms), `au_release`
+(10–3000 ms), `au_sens` (beat sensitivity 1–10). A form with `au_univ` but
+without `au_on`/`au_agc` turns those off. `/api/config` returns them as
+`audio: {on, mic, sel, din, ws, bclk, mic_pending, proto, dest, univ,
+prio, agc, gain, gate, attack, release, sens}`.
+
+- `GET /api/audio` (public): `{"on": true, "status":
+  "fault|gated|active|clipping", "db": -42, "level": 0..65535, "peak",
+  "beat", "phase", "beat_ms" (0: no tempo), "bands": [l, m, h], "onsets":
+  [l, m, h], "activity": "silence|noise|music", "restarts"}`, or
+  `{"on": false}`. `restarts`: times the capture restarted after the task
+  came too late (the audio then has a gap of a few ms; about once every
+  two seconds under full Art-Net load).
+- `POST /audio-beat` (login + `X-Requested-With`): sends one beat (channels
+  4 and 9 for 80 ms), to check a console's mapping without music.
+
+Cost (measured, fast flash, alternating runs): 16 universes at 170 fps
+stay at 0 % loss with audio on; 36-universe bursts read 0.0–0.2 % with and
+0.1–0.3 % without. Beyond the limits, at 48-universe bursts, loss rises by
+about one percentage point (3.3–4.0 % to 4.4–5.0 %). Under full load the
+capture restarts about once every two seconds (a gap of a few ms in the
+audio).
 
 ## Art-Net / sACN behaviour
 - ArtPoll → one ArtPollReply per group of up to four universes sharing

@@ -75,6 +75,10 @@ select.in{padding-right:8px}
 .bar{height:8px;margin-top:14px;border-radius:99px;background:var(--card2);overflow:hidden}
 .bar i{display:block;width:0;height:100%;background:var(--ac);transition:width .3s linear}
 .bar.busy i{animation:pu 1.2s infinite}
+.aum{display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center;margin-top:12px;font-size:13px;color:var(--mu)}
+.aum .bar{margin-top:0}
+.aum .bar i{transition:none}
+.aum .bar i.hit{background:var(--ok)}
 .acts+.hint,.msg+.hint{margin-top:12px}
 .note p{margin-bottom:10px}
 </style>
@@ -308,6 +312,84 @@ select.in{padding-right:8px}
   </section>
 </div>
 
+<form id="af" class="grid" novalidate autocomplete="off" hidden>
+  <section class="card">
+    <h2><i class="ic" data-i="pulse"></i>Audio <span id="au-p" class="pill">Off</span></h2>
+    <p class="hint">The microphone as a DMX source: level, beat and three bands as one universe, about 44 times a second, for a console or software to use (channel map in docs/api.md). Nothing here changes the LED outputs.</p>
+    <label class="chk"><input type="checkbox" id="au_on"><span>Send the audio universe</span></label>
+    <div class="fl" id="au-pr-l" style="margin-top:14px">Protocol</div>
+    <div class="seg" role="radiogroup" aria-labelledby="au-pr-l">
+      <input class="sr" type="radio" name="au_proto" id="au-artnet" value="artnet"><label for="au-artnet">Art-Net</label>
+      <input class="sr" type="radio" name="au_proto" id="au-sacn" value="sacn"><label for="au-sacn">sACN</label>
+    </div>
+    <div class="row2" style="margin-top:14px">
+      <div class="fld"><label class="fl" for="au_dest">Destination IP</label>
+        <input class="in" id="au_dest" type="text" inputmode="decimal" placeholder="empty: broadcast"></div>
+      <div class="fld"><label class="fl" for="au_univ" id="au-univ-l">Universe</label>
+        <input class="in" id="au_univ" type="number" min="0" max="32767" inputmode="numeric"></div>
+      <div class="fld" id="au-prio-f"><label class="fl" for="au_prio">sACN priority</label>
+        <input class="in" id="au_prio" type="number" min="1" max="200" inputmode="numeric"></div>
+    </div>
+    <p class="hint" id="au-h"></p>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="cpu"></i>Microphone</h2>
+    <div class="row2">
+      <div class="fld"><label class="fl" for="au_mic">Type</label>
+        <select class="in" id="au_mic">
+          <option value="i2s">I2S (SPH0645, INMP441, ICS-43434 …)</option>
+          <option value="i2s_mclk">I2S with MCLK (line-in ADC, e.g. PCM1808)</option>
+          <option value="pdm">PDM (SPM1423, MSM261 …)</option>
+        </select></div>
+      <div class="fld"><label class="fl" for="au_sel">SEL / L-R pin</label>
+        <select class="in" id="au_sel"><option value="gnd">to GND (left)</option><option value="vdd">to 3.3 V (right)</option></select></div>
+      <div class="fld"><label class="fl" for="au_din">Data (DOUT/SD)</label><select class="in" id="au_din"></select></div>
+      <div class="fld"><label class="fl" for="au_ws" id="au-ws-l">WS / LRCL</label><select class="in" id="au_ws"></select></div>
+      <div class="fld" id="au-bclk-f"><label class="fl" for="au_bclk">BCLK / SCK</label><select class="in" id="au_bclk"></select></div>
+    </div>
+    <p class="hint" id="au-mic-h"></p>
+    <div id="au-pend" class="note warn" hidden>The microphone type or pins changed: they apply after a restart (Maintenance → Restart).</div>
+  </section>
+
+  <section class="card">
+    <h2><i class="ic" data-i="sliders"></i>Analysis</h2>
+    <label class="chk"><input type="checkbox" id="au_agc"><span>Automatic gain: each value follows its own recent peak</span></label>
+    <div class="row2" style="margin-top:14px">
+      <div class="fld"><label class="fl" for="au_gain">Gain without AGC (dB)</label>
+        <input class="in" id="au_gain" type="number" min="-20" max="40" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="au_gate">Noise gate (dBFS)</label>
+        <input class="in" id="au_gate" type="number" min="-90" max="-20" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="au_attack">Attack (ms)</label>
+        <input class="in" id="au_attack" type="number" min="1" max="500" inputmode="numeric"></div>
+      <div class="fld"><label class="fl" for="au_release">Release (ms)</label>
+        <input class="in" id="au_release" type="number" min="10" max="3000" inputmode="numeric"></div>
+    </div>
+    <div class="fld" style="margin-top:10px"><label class="fl" for="au_sens">Beat sensitivity</label>
+      <div class="rng"><input id="au_sens" type="range" min="1" max="10" step="1" value="5"><output id="au_sensv" for="au_sens">5</output></div></div>
+    <button id="asave" class="btn pri" type="submit" disabled style="margin-top:14px">Save audio settings</button>
+    <div id="amsg" class="msg" role="status" hidden></div>
+  </section>
+
+  <section class="card span" id="au-live" hidden>
+    <h2><i class="ic" data-i="pulse"></i>Live</h2>
+    <div class="cs">
+      <div><span class="sub">Input</span><b id="au-db">—</b></div>
+      <div><span class="sub">Beat</span><b id="au-bpm">—</b></div>
+      <div><span class="sub">Activity</span><b id="au-act">—</b></div>
+    </div>
+    <div class="aum">
+      <span>Level</span><div class="bar"><i id="au-lv"></i></div>
+      <span>Low</span><div class="bar"><i id="au-b0"></i></div>
+      <span>Mid</span><div class="bar"><i id="au-b1"></i></div>
+      <span>High</span><div class="bar"><i id="au-b2"></i></div>
+      <span>Beat</span><div class="bar"><i id="au-ph"></i></div>
+    </div>
+    <div class="acts" style="margin-top:14px"><button id="au-beat" class="btn" type="button">Simulate beat</button></div>
+    <p class="hint">Simulate beat sends one beat (the beat and low-onset channels for 80 ms), to check a console's mapping without music.</p>
+  </section>
+</form>
+
 <div class="grid">
   <section class="card">
     <h2><i class="ic" data-i="upload"></i>Firmware update</h2>
@@ -404,6 +486,7 @@ function enable() {
   const ok = !!cfg && !busy, upd = ok && cfg.ota_available && cfg.restart_allowed;
   $('save').disabled = !ok;
   $('lsave').disabled = !ok;
+  $('asave').disabled = !ok;
   $('file').disabled = !upd;
   $('pick').classList.toggle('dis', !upd);
   $('go').disabled = !(upd && file);
@@ -433,7 +516,8 @@ function fill(c, part) {
     $('ap_channel').value = c.ap_channel; $('ap_after').value = c.ap_after;
     $('ap_boot').value = c.ap_boot; $('ap_idle').value = c.ap_idle;
   }
-  if (part !== 'dev') fillLed(c);
+  if (part !== 'dev' && part !== 'audio') fillLed(c);
+  if (part !== 'dev' && part !== 'led') fillAudio(c);
   show('b-pw', c.default_password);
   const nu = !c.ota_available ? 'Over-the-air updates are not available on this device.' : !c.restart_allowed ? HOLD : '';
   $('n-upd').textContent = nu; show('n-upd', nu);
@@ -978,6 +1062,108 @@ $('lf').onsubmit = async e => {
   }
   setBusy(false);
 };
+
+/* ---- Audio ---- */
+function fillAudio(c) {
+  const a = c.audio;
+  show('af', !!a);                                                  // hidden on firmware without audio
+  if (!a) return;
+  $('au_on').checked = a.on;
+  $('au_mic').value = a.mic; $('au_sel').value = a.sel;
+  $('au_din').value = a.din; $('au_ws').value = a.ws; $('au_bclk').value = a.bclk;
+  show('au-pend', !!a.mic_pending);
+  ($('au-' + a.proto) || $('au-artnet')).checked = true;
+  $('au_dest').value = a.dest;
+  $('au_univ').value = a.proto === 'sacn' ? a.univ + 1 : a.univ;
+  $('au_prio').value = a.prio;
+  $('au_agc').checked = a.agc;
+  $('au_gain').value = a.gain; $('au_gate').value = a.gate;
+  $('au_attack').value = a.attack; $('au_release').value = a.release;
+  $('au_sens').value = a.sens;
+  audioSync();
+}
+const auProto = () => ($('au-sacn').checked ? 'sacn' : 'artnet');
+// The board's free GPIOs; 34–39 are inputs only (data line).
+const MIC_PINS = [2, 13, 15, 32, 33, 34, 35, 36, 39], MIC_OUT = [2, 13, 15, 32, 33];
+[['au_din', MIC_PINS], ['au_ws', MIC_OUT], ['au_bclk', MIC_OUT]].forEach(([id, pins]) =>
+  pins.forEach(n => { const o = document.createElement('option'); o.value = n; o.textContent = 'GPIO ' + n; $(id).appendChild(o); }));
+function audioSync() {
+  const sacn = auProto() === 'sacn';
+  $('au-univ-l').textContent = sacn ? 'sACN universe (1–32768)' : 'Art-Net universe (port-address)';
+  $('au_univ').min = sacn ? 1 : 0; $('au_univ').max = sacn ? 32768 : 32767;
+  show('au-prio-f', sacn);
+  $('au_dest').placeholder = sacn ? 'empty: multicast' : 'empty: broadcast';
+  $('au_gain').disabled = $('au_agc').checked;
+  const pdm = $('au_mic').value === 'pdm';
+  show('au-bclk-f', !pdm);
+  $('au-ws-l').textContent = pdm ? 'Clock (CLK)' : 'WS / LRCL';
+  $('au-mic-h').textContent = ({i2s: 'Default wiring: DOUT 32, LRCL 15, BCLK 33, 3.3 V and GND.',
+    i2s_mclk: 'MCLK comes out on GPIO 3 (the ESP32 has it only on 0, 1 or 3); the serial console then has no RX line.',
+    pdm: 'PDM: data and clock only.'})[$('au_mic').value] + ' Type and pins apply after a restart.';
+  $('au_sensv').textContent = $('au_sens').value;
+  $('au-h').textContent = 'Not one of the universes the LED outputs receive. ' + (sacn
+    ? 'Without a destination: multicast to the universe\'s group (239.255.x.y).'
+    : 'Without a destination: broadcast on the board\'s network; a destination (the console) keeps the network quiet.');
+}
+$('af').addEventListener('input', audioSync);
+$('af').addEventListener('change', audioSync);
+$('af').onsubmit = async e => {
+  e.preventDefault();
+  if (busy) return;
+  const sacn = auProto() === 'sacn';
+  const checks = [['au_univ', sacn ? 1 : 0, sacn ? 32768 : 32767, 'universe'], ['au_prio', 1, 200, 'priority'],
+    ['au_gate', -90, -20, 'noise gate'], ['au_attack', 1, 500, 'attack'], ['au_release', 10, 3000, 'release']];
+  if (!$('au_agc').checked) checks.push(['au_gain', -20, 40, 'gain']);
+  const bad = checks.filter(([id, lo, hi]) => !/^-?\d+$/.test(val(id)) || +val(id) < lo || +val(id) > hi);
+  if (val('au_dest') && !IP.test(val('au_dest'))) bad.push(['au_dest', 0, 0, 'destination IP']);
+  bad.forEach(([id]) => $(id).setAttribute('aria-invalid', 'true'));
+  if (bad.length) { msg('amsg', 'err', 'Please check: ' + bad.map(b => b[3]).join(', ') + '.'); $(bad[0][0]).focus(); return; }
+  const used = [$('au_din').value, $('au_ws').value].concat($('au_mic').value === 'pdm' ? [] : [$('au_bclk').value]);
+  if (new Set(used).size !== used.length) { msg('amsg', 'err', 'The mic pins must be different.'); $('au_din').focus(); return; }
+  const body = {au_mic: $('au_mic').value, au_sel: $('au_sel').value, au_din: $('au_din').value, au_ws: $('au_ws').value,
+    au_bclk: $('au_bclk').value, au_proto: auProto(), au_dest: val('au_dest'), au_univ: +val('au_univ') - (sacn ? 1 : 0), au_prio: val('au_prio'),
+    au_gate: val('au_gate'), au_attack: val('au_attack'), au_release: val('au_release'), au_sens: $('au_sens').value};
+  if ($('au_on').checked) body.au_on = 1;
+  if ($('au_agc').checked) body.au_agc = 1; else body.au_gain = val('au_gain');
+  setBusy(true); msg('amsg', 'info', 'Saving…');
+  try {
+    const r = await postForm('/config', body);
+    if (r.ok) { msg('amsg', 'ok', r.text || 'Saved.'); refill('amsg', 'audio'); }
+    else msg('amsg', 'err', r.status === 401 ? AUTH : r.text || 'Error ' + r.status);
+  } catch (err) {
+    msg('amsg', 'err', 'No reply from the board. Check the connection and try again.');
+  }
+  setBusy(false);
+};
+$('au-beat').onclick = async () => {
+  try { const r = await postForm('/audio-beat', {}); if (!r.ok) msg('amsg', 'err', r.status === 401 ? AUTH : r.text); }
+  catch (e) { msg('amsg', 'err', 'No reply from the board.'); }
+};
+// The live meter: 5 times a second while audio is on and the page is visible.
+let auPending = false;
+const pct = v => Math.round(Math.min(100, Math.max(0, v))) + '%';
+async function audioPoll() {
+  if (auPending || document.hidden || !cfg || !cfg.audio || !cfg.audio.on) { show('au-live', false); return; }
+  auPending = true;
+  try {
+    const a = await getJSON('/api/audio');
+    const on = !!a.on;
+    show('au-live', on);
+    const p = $('au-p');
+    const st = !on ? ['Off', ''] : {fault: ['Mic fault', 'err'], clipping: ['Clipping', 'warn'], gated: ['Below gate', ''], active: ['Active', 'ok']}[a.status];
+    p.textContent = st[0]; p.className = 'pill ' + st[1];
+    if (on) {
+      $('au-db').textContent = a.db + ' dBFS';
+      $('au-bpm').textContent = a.beat_ms ? Math.round(60000 / a.beat_ms) + ' BPM' : '—';
+      $('au-act').textContent = {silence: 'Silence', noise: 'Noise', music: 'Music'}[a.activity];
+      $('au-lv').style.width = pct(a.level / 655.35);
+      a.bands.forEach((b, i) => { const e = $('au-b' + i); e.style.width = pct(b / 2.55); e.classList.toggle('hit', a.onsets[i]); });
+      $('au-ph').style.width = pct(a.phase / 2.55); $('au-ph').classList.toggle('hit', a.beat);
+    }
+  } catch (e) { /* the next poll tries again */ }
+  auPending = false;
+}
+setInterval(audioPoll, 200);
 
 /* ---- Restart / update: count down while the board restarts, then open / ---- */
 async function waitBoard(say) {

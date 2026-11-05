@@ -6,6 +6,7 @@
 extern crate alloc;
 
 pub mod artnet;
+pub mod audio;
 pub mod config;
 pub mod dhcp;
 pub mod dualboot;

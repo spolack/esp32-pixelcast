@@ -55,3 +55,22 @@
   layout" and `/migrate-layout` serve a pre-public layout and can go.
 - Status LED dark on the V2.2 board (see above); BOOT switch since the bootloader now
   selects "valid": check once at the board.
+
+## Audio (next steps)
+- Control channels (console → node): gain, gate, attack, release, beat
+  sensitivity, per-band gain, freeze, tap; 0 = the settings page's value.
+- OSC out (`/pixelcast/level`, `/beat`, `/bands`, `/status`).
+- Fixture profiles for the audio universe (GDTF for grandMA3, MagicQ, QLC+).
+- BPM and tempo confidence on channels 15–16; band edges adjustable.
+- Advertise the audio universe as an input port in ArtPollReply.
+- Capture restarts under full Art-Net load (about one every two seconds): a
+  larger DMA ring needs RAM. The main stack is at 25 368 of the 24 576
+  bytes it must keep (792 spare; measured peak use leaves ~3.9 KB free).
+  Knobs: the receive task's buffers (`rx.rs`), the two heap regions
+  (`main.rs`), the LED pool (`ledout.rs`, reclaimed RAM, 2.5 KB left there).
+- Mics: PDM and I2S with MCLK are built but untested on hardware (no such
+  mic here); SEL to 3.3 V is inferred from the tested GND case. Codecs that
+  need an I2C setup (ES7243, ES8388, WM8978; would share the OLED's bus)
+  and analog mics are not supported.
+- Art-Net broadcast and sACN multicast of the audio universe: built, not yet
+  received on a test machine (its firewall drops them).
