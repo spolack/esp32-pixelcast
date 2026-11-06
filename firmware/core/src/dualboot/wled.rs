@@ -10,7 +10,8 @@
 //!
 //! Record (little endian): 0 magic "PXCL", 4 version 1, 5 number of buses,
 //! 6..8 zero, 8 mA per LED, 9 zero, 10 current limit in mA (0 = none),
-//! 12..20 zero, then 4 buses of 10 bytes (start, length, pin, WLED LED type,
+//! 12 first output's universe (MoonLight's Art-Net in; WLED ignores it),
+//! 14..20 zero, then 4 buses of 10 bytes (start, length, pin, WLED LED type,
 //! WLED colour order, reversed, skipped LEDs, zero), 60 CRC-32 of 0..60.
 
 use crate::led::{LANES, LedType};
@@ -42,6 +43,8 @@ pub struct Leds {
     pub buses: heapless::Vec<Bus, LANES>,
     pub ma_per_led: u8,
     pub max_ma: u16,
+    /// Universe of the first output with LEDs.
+    pub universe: u16,
 }
 
 fn order_code(name: [u8; 3]) -> u8 {
@@ -63,6 +66,9 @@ pub fn from_settings(s: &Settings, pins: [u8; LANES]) -> Leds {
     let mut start = 0usize;
     for k in (0..LANES).filter(|&k| s.outputs[k].leds() > 0) {
         let o = &s.outputs[k];
+        if leds.buses.is_empty() {
+            leds.universe = o.universe;
+        }
         let skip = usize::from(o.offset).min(o.leds()).min(255);
         let len = o.leds() - skip;
         let _ = leds.buses.push(Bus {
@@ -90,6 +96,7 @@ pub fn encode(l: &Leds) -> [u8; LEN] {
     r[5] = l.buses.len() as u8;
     r[8] = l.ma_per_led;
     r[10..12].copy_from_slice(&l.max_ma.to_le_bytes());
+    r[12..14].copy_from_slice(&l.universe.to_le_bytes());
     for (i, b) in l.buses.iter().enumerate() {
         let o = 20 + i * 10;
         r[o..o + 2].copy_from_slice(&b.start.to_le_bytes());
@@ -156,5 +163,13 @@ mod tests {
         assert_eq!(&r[..6], b"PXCL\x01\x04");
         assert_eq!(u16::from_le_bytes([r[30], r[31]]), 512, "second bus start");
         assert_eq!(u32::from_le_bytes([r[60], r[61], r[62], r[63]]), crate::inplace::crc32(&r[..60]));
+    }
+
+    #[test]
+    fn universe_of_the_first_output_with_leds() {
+        let mut s = Settings::default();
+        s.outputs[0].leds = 0;
+        let r = encode(&from_settings(&s, PINS));
+        assert_eq!(u16::from_le_bytes([r[12], r[13]]), 4);
     }
 }

@@ -1,0 +1,243 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Fri, 6 Nov 2026 03:17:32 +0100
+Subject: [PATCH 5/6] esp32-pixelcast in the other slot: first configuration
+ from its setup
+
+On MoonLight's first start next to esp32-pixelcast (no Network or Drivers
+settings yet, or after esp32-pixelcast's "Reset MoonLight"), it takes the
+board's Ethernet (W5500 on SPI: SCLK 18, MISO 19, MOSI 23, CS 5, INT 4)
+and esp32-pixelcast's setup from the handoff it writes each time it starts
+the other slot: its static address, if it has one (with DHCP there,
+MoonLight stays on DHCP), and its LED outputs (pin, length, LED type and
+colour order) on one row of lights, and Art-Net in (NetworkReceiveEffect)
+from the first output's universe, all outputs one run of RGB lights. Outputs that share a fixture and
+follow each other get one RMT driver (it starts every pin before waiting:
+42 fps for 4 x 360-400 RGBW LEDs, 11 with a driver each); others get a
+driver each. Direction and dark LEDs at the start are not carried over.
+The document is applied, saved, and MoonLight starts once more on it.
+
+From then on MoonLight's own settings rule. WiFi is set up in MoonLight
+(its access point and Improv), as before.
+
+Records (sector 2 of esp32-pixelcast's "storage" partition): "PXCW" at
+0x2000, "PXCL" at 0x2100, the same as its WLED patches read.
+---
+ esp32/main/pixelcast.cpp | 148 ++++++++++++++++++++++++++++++++++++++-
+ src/main.cpp             |   9 ++-
+ 2 files changed, 154 insertions(+), 3 deletions(-)
+
+diff --git a/esp32/main/pixelcast.cpp b/esp32/main/pixelcast.cpp
+index ad0be04..8f911f9 100644
+--- a/esp32/main/pixelcast.cpp
++++ b/esp32/main/pixelcast.cpp
+@@ -8,18 +8,28 @@
+ // - Way back: POST /api/pixelcast, or click BOOT (GPIO0) three times within 2 s: the other
+ //   slot becomes the boot slot and MoonLight restarts into it. The firmware upload accepts
+ //   esp32-pixelcast's image (recognised by the project name in its app descriptor).
++// - First configuration: on MoonLight's first start here (no Network or Drivers settings yet,
++//   or after esp32-pixelcast's "Reset MoonLight"), it takes the board's Ethernet (W5500 on
++//   SPI) and esp32-pixelcast's setup: its static address (if it has one), its LED outputs and
++//   Art-Net in from its first output's universe. From then on MoonLight's own settings rule.
+ #include "sdkconfig.h"
+ 
+ #ifdef CONFIG_MM_PIXELCAST
++#include "core/module/Scheduler.h"
++#include "core/module/StateDocument.h"
+ #include "core/system/FilesystemModule.h"
++#include "platform/platform.h"
++#include "esp_partition.h"
+ #include "driver/gpio.h"
+ #include "esp_ota_ops.h"
+ #include "esp_system.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ 
++#include <cstdarg>
+ #include <cstdio>
+ #include <cstring>
++#include <string>
+ 
+ // The 74HCT245's output enable (active low): without it no LED output reaches the strips.
+ static constexpr gpio_num_t kLedOutputEnable = GPIO_NUM_25;
+@@ -70,14 +80,150 @@ static void bootWatch(void*) {
+     }
+ }
+ 
++// ---- First configuration from esp32-pixelcast. Its handoff, written each time it starts the
++// other slot, is sector 2 of its "storage" partition (little endian, CRC-32 IEEE):
++// 0x2000 "PXCW" address: 4 version 1, 5 mode (1 = static), 6 prefix length, 8 IPv4 address,
++//   12 gateway (0.0.0.0: none), CRC of 0..20 at 20.
++// 0x2100 "PXCL" LEDs (in WLED's codes, the record WLED takes too): 4 version 1, 5 outputs,
++//   8 mA per LED, 10 current limit (mA), 12 first output's universe, 20 + 10*i output i: start, length, pin, LED type
++//   (22 RGB, 30 RGBW), colour order (0 GRB, 1 RGB, 2 BRG, 3 RBG, 4 BGR, 5 GBR), reversed,
++//   dark LEDs at the start; CRC of 0..60 at 60. Direction and dark LEDs are not carried over.
++static uint32_t crc32(const uint8_t* d, size_t n) {
++    uint32_t crc = 0xFFFFFFFF;
++    for (size_t i = 0; i < n; i++) {
++        crc ^= d[i];
++        for (int k = 0; k < 8; k++) crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320 : crc >> 1;
++    }
++    return ~crc;
++}
++
++static bool record(uint32_t at, const char* magic, uint8_t* r, size_t len) {
++    const esp_partition_t* part =
++        esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "storage");
++    if (!part || part->size < at + len || esp_partition_read(part, at, r, len) != ESP_OK) return false;
++    uint32_t crc;
++    std::memcpy(&crc, r + len - 4, 4);
++    return std::memcmp(r, magic, 4) == 0 && r[4] == 1 && crc32(r, len - 4) == crc;
++}
++
++// Any length: a cut-off piece would leave the document unparsable, and nothing of it applied.
++static void appendf(std::string& s, const char* fmt, ...) {
++    va_list ap, again;
++    va_start(ap, fmt);
++    va_copy(again, ap);
++    const int n = std::vsnprintf(nullptr, 0, fmt, ap);
++    va_end(ap);
++    if (n > 0) {
++        const size_t at = s.size();
++        s.resize(at + n + 1);
++        std::vsnprintf(&s[at], n + 1, fmt, again);
++        s.resize(at + n);
++    }
++    va_end(again);
++}
++
++static const char* fixture(uint8_t type, uint8_t order) {
++    static const char* const rgb[] = {"GRB", "RGB", "BRG", "RBG", "BGR", "GBR"};
++    if (type == 30) return order == 1 ? "RGBW" : "GRBW";
++    return order < 6 ? rgb[order] : "GRB";
++}
++
++// The document for MoonLight's first start here.
++static std::string firstConfig() {
++    uint8_t nw[24], led[64];
++    const bool haveNw = record(0x2000, "PXCW", nw, sizeof(nw)) && nw[5] == 1 && nw[6] >= 1 && nw[6] <= 30;
++    const bool haveLed = record(0x2100, "PXCL", led, sizeof(led)) && led[5] >= 1 && led[5] <= 4;
++    auto u16 = [&](int o) { return static_cast<unsigned>(led[o] | (led[o + 1] << 8)); };
++
++    std::string j = "{\"System\":{\"deviceModel\":\"esp32-pixelcast board\"},";
++    // The board's W5500: SCLK 18, MISO 19, MOSI 23, CS 5, INT 4, no reset line.
++    j += "\"Network\":{\"Ethernet\":{\"ethBoard\":\"Custom\",\"ethType\":3,\"ethSpiMiso\":19,"
++         "\"ethSpiMosi\":23,\"ethSpiSck\":18,\"ethSpiCs\":5,\"ethSpiIrq\":4,\"ethRstGpio\":-1";
++    if (haveNw) {
++        const uint32_t mask = 0xFFFFFFFFUL << (32 - nw[6]);
++        appendf(j, ",\"ipSettings\":\"Static\",\"ip\":\"%u.%u.%u.%u\",\"subnet\":\"%u.%u.%u.%u\"",
++                nw[8], nw[9], nw[10], nw[11], static_cast<unsigned>(mask >> 24), static_cast<unsigned>((mask >> 16) & 255),
++                static_cast<unsigned>((mask >> 8) & 255), static_cast<unsigned>(mask & 255));
++        if (nw[12] | nw[13] | nw[14] | nw[15])
++            appendf(j, ",\"gateway\":\"%u.%u.%u.%u\"", nw[12], nw[13], nw[14], nw[15]);
++    }
++    j += "}}";
++    if (haveLed) {
++        // The outputs with LEDs, in order.
++        struct Out { unsigned start, len, pin; const char* fixture; };
++        Out out[4];
++        int n = 0;
++        for (int i = 0; i < led[5]; i++) {
++            const int o = 20 + i * 10;
++            if (u16(o + 2)) out[n++] = {u16(o), u16(o + 2), led[o + 4], fixture(led[o + 5], led[o + 6])};
++        }
++        // One RMT driver for all of them when they share a fixture and follow each other: it
++        // starts every pin before waiting, so a frame costs the longest strand, not the sum.
++        // Otherwise one driver per output, each on its range of the lights.
++        bool one = n > 0;
++        for (int i = 1; i < n; i++)
++            one = one && std::strcmp(out[i].fixture, out[0].fixture) == 0 && out[i].start == out[i - 1].start + out[i - 1].len;
++        unsigned total = 0;
++        for (int i = 0; i < n; i++)
++            if (out[i].start + out[i].len > total) total = out[i].start + out[i].len;
++        j += ",\"Drivers\":{\"$patch\":\"replace\"";
++        if (one) {
++            std::string pins, lens;
++            for (int i = 0; i < n; i++) {
++                appendf(pins, "%s%u", i ? "," : "", out[i].pin);
++                appendf(lens, "%s%u", i ? "," : "", out[i].len);
++            }
++            appendf(j, ",\"RmtLed\":{\"type\":\"RmtLedDriver\",\"pins\":\"%s\",\"ledsPerPin\":\"%s\",\"fixture\":\"%s\","
++                       "\"start\":%u,\"count\":%u}",
++                    pins.c_str(), lens.c_str(), out[0].fixture, out[0].start, total - out[0].start);
++        } else {
++            for (int i = 0; i < n; i++)
++                appendf(j, ",\"RmtLed%d\":{\"type\":\"RmtLedDriver\",\"pins\":\"%u\",\"fixture\":\"%s\","
++                           "\"start\":%u,\"count\":%u}",
++                        i + 1, out[i].pin, out[i].fixture, out[i].start, out[i].len);
++        }
++        j += "}";
++        if (total) appendf(j, ",\"Layouts\":{\"$patch\":\"replace\",\"Grid\":{\"type\":\"GridLayout\",\"width\":%u,\"height\":1}}", total);
++        // Lights in over Art-Net (also E1.31, DDP) from the first output's universe on: RGB, 170
++        // lights a universe, all outputs one run (esp32-pixelcast starts each output anew).
++        appendf(j, ",\"Effects\":{\"$patch\":\"replace\",\"Layer\":{\"type\":\"Layer\",\"$patch\":\"replace\","
++                   "\"NetworkReceive\":{\"type\":\"NetworkReceiveEffect\",\"universe_start\":%u,\"channels_per_universe\":510}}}",
++                u16(12));
++    }
++    j += "}";
++    return j;
++}
++
++static bool firstStart = false;
++
++// Before the modules load their settings.
++void pixelcastBeforeSetup() {
++    firstStart = mm::platform::fsMount() && !mm::platform::fsExists("/.config/NetworkModule.json") &&
++                 !mm::platform::fsExists("/.config/Drivers.json");
++}
++
+ // After the modules are set up.
+-void pixelcastAfterSetup() {
++void pixelcastAfterSetup(mm::Scheduler& scheduler) {
+     esp_ota_img_states_t state;
+     if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
+         state == ESP_OTA_IMG_PENDING_VERIFY) {
+         esp_ota_mark_app_valid_cancel_rollback();
+         std::printf("pixelcast: this slot confirmed\n");
+     }
++    if (firstStart) {
++        const std::string doc = firstConfig();
++        const mm::StateDocumentResult r = mm::applyStateDocument(scheduler, doc.c_str());
++        std::printf("pixelcast: first configuration %s%s%s\n", r.ok ? "applied" : r.error, r.ok ? "" : " at ",
++                    r.ok ? "" : r.where);
++        // Saved, then started again on it: Ethernet takes its pins and address at start. Only
++        // when the save worked, or a failing filesystem would restart forever.
++        mm::FilesystemModule::flushPending();
++        if (r.ok && mm::platform::fsExists("/.config/NetworkModule.json")) {
++            std::printf("pixelcast: restarting on the first configuration\n");
++            vTaskDelay(pdMS_TO_TICKS(100));
++            esp_restart();
++        }
++    }
+     xTaskCreate(bootWatch, "pxcBoot", 4096, nullptr, 1, nullptr);
+ }
+ #endif
+diff --git a/src/main.cpp b/src/main.cpp
+index ef2a7bd..6d556a8 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -117,7 +117,9 @@
+ #include "sdkconfig.h"
+ #endif
+ #ifdef CONFIG_MM_PIXELCAST
+-void pixelcastAfterSetup();
++namespace mm { class Scheduler; }
++void pixelcastBeforeSetup();
++void pixelcastAfterSetup(mm::Scheduler& scheduler);
+ #endif
+ 
+ #include <csignal>   // sig_atomic_t: the stop flag a signal handler writes
+@@ -289,9 +291,12 @@ void mm_main(volatile std::sig_atomic_t& keepRunning, uint16_t httpPort) {
+     // Only where an IP stack exists, which is what makes a network-less build supported: @xref{why-registration-order-matters}.
+     if constexpr (mm::platform::hasNetwork) scheduler.addModule(httpServer);
+ 
++#ifdef CONFIG_MM_PIXELCAST
++    pixelcastBeforeSetup();   // next to esp32-pixelcast: esp32/main/pixelcast.cpp
++#endif
+     scheduler.setup();
+ #ifdef CONFIG_MM_PIXELCAST
+-    pixelcastAfterSetup();   // next to esp32-pixelcast: esp32/main/pixelcast.cpp
++    pixelcastAfterSetup(scheduler);
+ #endif
+ 
+     uint32_t lights = layouts->totalLightCount();

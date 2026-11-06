@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Fri, 6 Nov 2026 03:12:10 +0100
+Subject: [PATCH 2/6] Builds without the certificate bundle
+
+The bundle is attached only when CONFIG_MBEDTLS_CERTIFICATE_BUNDLE is set,
+so a build that leaves HTTPS out (to fit a 1.5 MB app slot) links. Its URL
+updates and JSON fetches then work over plain HTTP only.
+---
+ src/platform/esp32/platform_esp32_ota.cpp | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/src/platform/esp32/platform_esp32_ota.cpp b/src/platform/esp32/platform_esp32_ota.cpp
+index d1b7d01..2b456fe 100644
+--- a/src/platform/esp32/platform_esp32_ota.cpp
++++ b/src/platform/esp32/platform_esp32_ota.cpp
+@@ -95,7 +95,9 @@
+ #include "esp_partition.h"   // esp_partition_find_first/erase_range/write: MoonBase
+ #include "esp_image_format.h" // esp_image_verify + the image/segment headers
+ #include "sdkconfig.h"     // CONFIG_IDF_FIRMWARE_CHIP_ID: which chip THIS build is for
++#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+ #include "esp_crt_bundle.h"
++#endif
+ #include "esp_http_client.h"
+ #include "esp_system.h"
+ #include "esp_heap_caps.h"   // heap_caps_malloc/free — the upload chunk buffer
+@@ -166,7 +168,9 @@ void otaTask(void* arg) {
+     // The bundled trust anchors, the same mechanism a browser uses, with no certificate baked in. Attached unconditionally: a plain local URL leaves them unused while still satisfying the begin call.
+     esp_http_client_config_t http_config = {};
+     http_config.url = p->url;
++#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+     http_config.crt_bundle_attach = esp_crt_bundle_attach;
++#endif
+     http_config.timeout_ms = 10000;
+     // GitHub release-asset URLs 302-redirect to objects.githubusercontent.com. Default redirect handling is off in esp_http_client; force-follow.
+     http_config.disable_auto_redirect = false;
+@@ -509,7 +513,9 @@ bool moonBaseFetchUrlSync(const char* url, char* statusBuf, size_t statusBufLen,
+     esp_http_client_config_t cfg = {};
+     cfg.url = url;
+     // Same TLS and redirect handling the app's OTA fetch needs, and for the same reasons: a release asset 302s to objects.githubusercontent.com, whose headers overflow the 512-byte default buffer.
++#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+     cfg.crt_bundle_attach = esp_crt_bundle_attach;
++#endif
+     cfg.timeout_ms = 10000;
+     cfg.disable_auto_redirect = false;
+     cfg.max_redirection_count = 10;
+@@ -795,7 +801,9 @@ int httpFetch(const char* method, const char* url, const char* reqBody, uint32_t
+     cfg.url = url;
+     cfg.timeout_ms = static_cast<int>(timeoutMs);
+     // The SAME trust-anchor bundle the OTA path uses: IDF's built-in root certificates, so this verifies a public server without us shipping or maintaining a CA store.
++#if CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+     cfg.crt_bundle_attach = esp_crt_bundle_attach;
++#endif
+     cfg.method = methodOf(method);
+     // No redirect following: a server moving the request somewhere the caller never named is refused.
+     cfg.disable_auto_redirect = true;

@@ -906,12 +906,14 @@ async fn update(sock: &mut TcpSocket<'_>, ctx: &'static WebCtx, len: usize, earl
 
     upload_diag::phase(3);
     let kind = updater.kind();
+    let mut back = "";
     let finished = {
         let paused = core1::pause().await;
         let r = updater.finish(&mut fc.flash, &paused);
         if r.is_ok() && kind == ota::Kind::Other {
             let fw = dualboot::detect(&mut fc.flash).unwrap_or(dualboot::Firmware::Unknown);
             dualboot::write_handoff(&mut fc.flash, &paused, fw);
+            back = fw.adapter().map_or("", |a| a.way_back);
         }
         r
     };
@@ -920,12 +922,14 @@ async fn update(sock: &mut TcpSocket<'_>, ctx: &'static WebCtx, len: usize, earl
         Ok(()) => {
             RESTART_PENDING.store(true, Ordering::Relaxed);
             let msg = match kind {
-                ota::Kind::Ours => "Update written and verified. Restarting...\n",
-                ota::Kind::Other => {
-                    "Other firmware written and verified. Restarting into it. To come back, upload this firmware's .bin in its update page.\n"
-                }
+                ota::Kind::Ours => String::from("Update written and verified. Restarting...\n"),
+                ota::Kind::Other => format!(
+                    "Other firmware written and verified. Restarting into it. To come back, upload this firmware's .bin in its update page{}{}.\n",
+                    if back.is_empty() { "" } else { ", or: " },
+                    back
+                ),
             };
-            text(sock, "200 OK", msg).await;
+            text(sock, "200 OK", &msg).await;
             After::Restart
         }
         Err(e) => {

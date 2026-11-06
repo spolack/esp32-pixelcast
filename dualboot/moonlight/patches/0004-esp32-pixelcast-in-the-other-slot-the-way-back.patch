@@ -1,0 +1,195 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Fri, 6 Nov 2026 03:15:12 +0100
+Subject: [PATCH 4/6] esp32-pixelcast in the other slot: the way back
+
+POST /api/pixelcast, or BOOT (GPIO0) clicked three times within 2 s,
+makes the other app slot the boot slot and restarts into esp32-pixelcast.
+The firmware upload accepts esp32-pixelcast's image, recognised by the
+project name in its app descriptor.
+
+esp32-pixelcast starts MoonLight as "pending verify" (its bootloader has
+app rollback), and MoonLight never marked an image valid: its first
+restart went back. Once its modules are set up it now marks its slot
+valid.
+---
+ esp32/main/pixelcast.cpp                  | 64 +++++++++++++++++++++++
+ src/core/system/HttpServerModule.cpp      | 14 +++++
+ src/main.cpp                              |  9 ++++
+ src/platform/esp32/platform_esp32_ota.cpp | 11 +++-
+ 4 files changed, 97 insertions(+), 1 deletion(-)
+
+diff --git a/esp32/main/pixelcast.cpp b/esp32/main/pixelcast.cpp
+index 2919136..ad0be04 100644
+--- a/esp32/main/pixelcast.cpp
++++ b/esp32/main/pixelcast.cpp
+@@ -3,17 +3,81 @@
+ //
+ // - The board: the LED outputs go through a 74HCT245 whose output enable is GPIO 25,
+ //   driven low from the start.
++// - Started by esp32-pixelcast, MoonLight boots "pending verify" (its bootloader has app
++//   rollback): once it has set up it marks itself valid, or its next restart would go back.
++// - Way back: POST /api/pixelcast, or click BOOT (GPIO0) three times within 2 s: the other
++//   slot becomes the boot slot and MoonLight restarts into it. The firmware upload accepts
++//   esp32-pixelcast's image (recognised by the project name in its app descriptor).
+ #include "sdkconfig.h"
+ 
+ #ifdef CONFIG_MM_PIXELCAST
++#include "core/system/FilesystemModule.h"
+ #include "driver/gpio.h"
++#include "esp_ota_ops.h"
++#include "esp_system.h"
++#include "freertos/FreeRTOS.h"
++#include "freertos/task.h"
++
++#include <cstdio>
++#include <cstring>
+ 
+ // The 74HCT245's output enable (active low): without it no LED output reaches the strips.
+ static constexpr gpio_num_t kLedOutputEnable = GPIO_NUM_25;
++static constexpr gpio_num_t kBoot = GPIO_NUM_0;
+ 
+ void pixelcastEarly() {
+     gpio_reset_pin(kLedOutputEnable);
+     gpio_set_direction(kLedOutputEnable, GPIO_MODE_OUTPUT);
+     gpio_set_level(kLedOutputEnable, 0);
+ }
++
++// Whether a descriptor's project name (32 bytes, maybe unterminated) is esp32-pixelcast's.
++bool pixelcastIsImage(const char* project) {
++    return std::strncmp(project, "esp32-pixelcast", 32) == 0;
++}
++
++// Boots esp32-pixelcast: the other app slot (the one MoonLight's own update would write next).
++void pixelcastBack(const char* why) {
++    const esp_partition_t* other = esp_ota_get_next_update_partition(nullptr);
++    std::printf("pixelcast: switching back (%s)\n", why);
++    mm::FilesystemModule::flushPending();
++    if (other && esp_ota_set_boot_partition(other) == ESP_OK) {
++        vTaskDelay(pdMS_TO_TICKS(100));
++        esp_restart();
++    }
++    std::printf("pixelcast: no bootable image in the other slot\n");
++}
++
++// BOOT (GPIO0) clicked three times within 2 s; polled, the pin has its own pull-up.
++static void bootWatch(void*) {
++    gpio_reset_pin(kBoot);
++    gpio_set_direction(kBoot, GPIO_MODE_INPUT);
++    gpio_set_pull_mode(kBoot, GPIO_PULLUP_ONLY);
++    bool last = true;
++    TickType_t changed = 0, clicks[3] = {0, 0, 0};
++    for (;;) {
++        vTaskDelay(pdMS_TO_TICKS(10));
++        const bool now = gpio_get_level(kBoot) != 0;
++        const TickType_t t = xTaskGetTickCount();
++        if (now == last || t - changed < pdMS_TO_TICKS(30)) continue;
++        changed = t;
++        last = now;
++        if (!now) continue;  // pressed; count the release
++        clicks[0] = clicks[1];
++        clicks[1] = clicks[2];
++        clicks[2] = t;
++        if (clicks[0] && t - clicks[0] < pdMS_TO_TICKS(2000)) pixelcastBack("BOOT clicked three times");
++    }
++}
++
++// After the modules are set up.
++void pixelcastAfterSetup() {
++    esp_ota_img_states_t state;
++    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
++        state == ESP_OTA_IMG_PENDING_VERIFY) {
++        esp_ota_mark_app_valid_cancel_rollback();
++        std::printf("pixelcast: this slot confirmed\n");
++    }
++    xTaskCreate(bootWatch, "pxcBoot", 4096, nullptr, 1, nullptr);
++}
+ #endif
+diff --git a/src/core/system/HttpServerModule.cpp b/src/core/system/HttpServerModule.cpp
+index f05e250..a8a7dad 100644
+--- a/src/core/system/HttpServerModule.cpp
++++ b/src/core/system/HttpServerModule.cpp
+@@ -24,6 +24,12 @@
+ #include "core/util/build_info.h"                      // kVersion: the tag a script is fetched from
+ #include "platform/platform.h"
+ #include "ui/ui_embedded.h"
++#if __has_include("sdkconfig.h")
++#include "sdkconfig.h"
++#endif
++#ifdef CONFIG_MM_PIXELCAST
++void pixelcastBack(const char* why);   // esp32/main/pixelcast.cpp
++#endif
+ 
+ #include <algorithm>   // std::min: a stream's span within its budget
+ #include <climits>
+@@ -592,6 +598,14 @@ void HttpServerModule::routeRequest(platform::TcpConnection& conn, char* req, si
+             handleWledState(conn, body);
+         } else if (std::strcmp(path, "/api/reboot") == 0) {
+             handleReboot(conn);
++#ifdef CONFIG_MM_PIXELCAST
++        } else if (std::strcmp(path, "/api/pixelcast") == 0) {
++            // esp32-pixelcast in the other slot: start it, after the reply went out.
++            sendResponse(conn, 200, "application/json", "{\"ok\":true}");
++            conn.close();
++            platform::delayMs(200);
++            pixelcastBack("requested");
++#endif
+         } else if (std::strcmp(path, "/api/firmware/url") == 0 && body) {
+             handleFirmwareUrl(conn, body);
+         } else if (std::strcmp(path, "/api/firmware/moonbase") == 0) {
+diff --git a/src/main.cpp b/src/main.cpp
+index 2383d16..ef2a7bd 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -113,6 +113,12 @@
+ /// A sub-millisecond sleep parks the thread at no cost to the frame rate, and the yield stays for the split's frame boundary, which must not sleep.
+ ///
+ #include "module_types.h"
++#if __has_include("sdkconfig.h")
++#include "sdkconfig.h"
++#endif
++#ifdef CONFIG_MM_PIXELCAST
++void pixelcastAfterSetup();
++#endif
+ 
+ #include <csignal>   // sig_atomic_t: the stop flag a signal handler writes
+ 
+@@ -284,6 +290,9 @@ void mm_main(volatile std::sig_atomic_t& keepRunning, uint16_t httpPort) {
+     if constexpr (mm::platform::hasNetwork) scheduler.addModule(httpServer);
+ 
+     scheduler.setup();
++#ifdef CONFIG_MM_PIXELCAST
++    pixelcastAfterSetup();   // next to esp32-pixelcast: esp32/main/pixelcast.cpp
++#endif
+ 
+     uint32_t lights = layouts->totalLightCount();
+     uint32_t bufBytes = lights * 3;
+diff --git a/src/platform/esp32/platform_esp32_ota.cpp b/src/platform/esp32/platform_esp32_ota.cpp
+index 2b456fe..b49145e 100644
+--- a/src/platform/esp32/platform_esp32_ota.cpp
++++ b/src/platform/esp32/platform_esp32_ota.cpp
+@@ -99,6 +99,9 @@
+ #include "esp_crt_bundle.h"
+ #endif
+ #include "esp_http_client.h"
++#ifdef CONFIG_MM_PIXELCAST
++bool pixelcastIsImage(const char* project);   // esp32/main/pixelcast.cpp
++#endif
+ #include "esp_system.h"
+ #include "esp_heap_caps.h"   // heap_caps_malloc/free — the upload chunk buffer
+ #include "esp_log.h"
+@@ -391,7 +394,13 @@ bool flushImage(Image* img) {
+             if (n < firmware::kIdentifyBytes) { imageStatus(img, "error: too short to be a firmware image"); return false; }
+             const auto info = firmware::identify(img->buf, n);
+             if (info.described && firmware::isMoonBaseImage(info.project)) { imageStatus(img, "error: that is a MoonBase image, not an app"); return false; }
+-            if (!info.described || !firmware::isAppImage(info.project)) { imageStatus(img, "error: that image is not this project"); return false; }
++#ifdef CONFIG_MM_PIXELCAST
++            // esp32-pixelcast, the firmware in the other slot: its image is the way back.
++            const bool pixelcast = info.described && pixelcastIsImage(info.project);
++#else
++            const bool pixelcast = false;
++#endif
++            if (!pixelcast && (!info.described || !firmware::isAppImage(info.project))) { imageStatus(img, "error: that image is not this project"); return false; }
+         }
+     }
+     if (img->target == OtaTarget::MoonBase) {

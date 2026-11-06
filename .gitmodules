@@ -7,3 +7,8 @@
 	url = https://github.com/wled/WLED.git
 	branch = main
 	update = none
+[submodule "dualboot/moonlight"]
+	path = dualboot/moonlight/upstream
+	url = https://github.com/MoonModules/MoonLight.git
+	branch = main
+	update = none

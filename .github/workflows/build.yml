@@ -125,10 +125,35 @@ jobs:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.name }}.bin
 
+  # MoonLight builds with ESP-IDF v6.1: in its image, like the bootloader
+  # (dualboot/moonlight/build.sh then takes the local idf.py).
+  moonlight:
+    name: moonlight (upstream + patches)
+    runs-on: ubuntu-latest
+    container: espressif/idf:v6.1
+    steps:
+      - uses: actions/checkout@v7
+      # The checkout belongs to the runner user, the container runs as root.
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - id: pin
+        run: echo "commit=$(git ls-files -s dualboot/moonlight/upstream | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+        shell: bash
+      - uses: actions/cache@v6
+        with:
+          path: build/dualboot/moonlight/cache
+          key: dualboot-moonlight-${{ steps.pin.outputs.commit }}-${{ hashFiles('tools/build.sh', 'dualboot/moonlight/**') }}
+          restore-keys: dualboot-moonlight-
+      - run: tools/build.sh moonlight
+        shell: bash
+      - uses: actions/upload-artifact@v7
+        with:
+          name: moonlight
+          path: dist/moonlight.bin
+
   publish:
     name: image and release
     runs-on: ubuntu-latest
-    needs: [test, bootloader, firmware, dualboot]
+    needs: [test, bootloader, firmware, dualboot, moonlight]
     permissions:
       contents: write
     steps:

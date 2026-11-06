@@ -2,8 +2,8 @@
 
 Art-Net 4 / sACN (E1.31) to LED firmware for the ESP32 + W5500, written in
 Rust (esp-hal, embassy, bare metal). Four outputs for WS281x/SK6812 (RGB,
-RGBW). Dual boot with another firmware, e.g. upstream
-[WLED](dualboot/wled/README.md).
+RGBW). Dual boot with another firmware: upstream
+[WLED](dualboot/wled/README.md) or [MoonLight](dualboot/moonlight/README.md).
 
 Images: [Releases](https://github.com/spolack/esp32-pixelcast/releases)
 (`nightly` follows `main`).
@@ -106,15 +106,15 @@ on a trusted network.
 ## Dual boot
 
 The second app slot holds another firmware, started from the settings page
-or with three BOOT clicks. Supported: upstream WLED with a short patch series
-(W5500, this board, the way back); it starts with this firmware's LED setup
-and static address. More firmwares plug in under `dualboot/<name>/`. Details:
+or with three BOOT clicks. Supported: upstream WLED and MoonLight, each with a
+short patch series (W5500, this board, the way back); each starts with this
+firmware's LED setup and static address. More firmwares plug in under `dualboot/<name>/`. Details:
 [`dualboot/README.md`](dualboot/README.md).
 
 ## Building
 
 Needs: Rust with espup (`espup install`), espflash, esptool; ESP-IDF v6.1 or
-podman/docker (bootloader); PlatformIO and Node.js 20 (WLED); git, python3,
+podman/docker (bootloader, MoonLight); PlatformIO and Node.js 20 (WLED); git, python3,
 curl.
 
 ```
@@ -146,4 +146,4 @@ Vibecoded: written with an AI coding assistant, tested on hardware.
 
 GPL-3.0-or-later ([`LICENSE`](LICENSE)). Bootloader parts from ESP-IDF examples:
 Apache-2.0. Patch series: the license of the patched project
-(embassy-net-wiznet: MIT OR Apache-2.0, WLED: EUPL-1.2).
+(embassy-net-wiznet: MIT OR Apache-2.0, WLED: EUPL-1.2, MoonLight: GPL-3.0).

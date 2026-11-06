@@ -1,0 +1,239 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Simon Polack <spolack+git@mailbox.org>
+Date: Fri, 6 Nov 2026 14:01:56 +0100
+Subject: [PATCH 6/6] esp32-pixelcast in the other slot: the board's OLED
+
+The 128x32 SSD1306 at 0x3C on the I2C header (SDA 21, SCL 22) shows what
+esp32-pixelcast's shows: the name, the network, Art-Net in and the frame
+rate. The first configuration sets the I2C bus to those pins.
+
+The render loop writes the four lines once a second and attaches the
+panel to the bus, whose owner runs there too; a task of its own sends
+the lines that changed, so the loop never waits on the bus. The bus
+detaches it before it closes.
+---
+ esp32/main/pixelcast.cpp                  | 137 +++++++++++++++++++++-
+ src/main.cpp                              |   4 +
+ src/platform/esp32/platform_esp32_i2c.cpp |   8 ++
+ 3 files changed, 148 insertions(+), 1 deletion(-)
+
+diff --git a/esp32/main/pixelcast.cpp b/esp32/main/pixelcast.cpp
+index 8f911f9..77a6550 100644
+--- a/esp32/main/pixelcast.cpp
++++ b/esp32/main/pixelcast.cpp
+@@ -12,18 +12,24 @@
+ //   or after esp32-pixelcast's "Reset MoonLight"), it takes the board's Ethernet (W5500 on
+ //   SPI) and esp32-pixelcast's setup: its static address (if it has one), its LED outputs and
+ //   Art-Net in from its first output's universe. From then on MoonLight's own settings rule.
++// - The OLED (SSD1306, 128x32 at 0x3C on I2C SDA 21, SCL 22), like esp32-pixelcast's: name,
++//   network, Art-Net in, frame rate.
+ #include "sdkconfig.h"
+ 
+ #ifdef CONFIG_MM_PIXELCAST
+ #include "core/module/Scheduler.h"
+ #include "core/module/StateDocument.h"
+ #include "core/system/FilesystemModule.h"
++#include "core/system/SystemModule.h"
++#include "light/powerfunctions/fonts.h"
+ #include "platform/platform.h"
+ #include "esp_partition.h"
+ #include "driver/gpio.h"
++#include "driver/i2c_master.h"
+ #include "esp_ota_ops.h"
+ #include "esp_system.h"
+ #include "freertos/FreeRTOS.h"
++#include "freertos/semphr.h"
+ #include "freertos/task.h"
+ 
+ #include <cstdarg>
+@@ -135,7 +141,7 @@ static std::string firstConfig() {
+     const bool haveLed = record(0x2100, "PXCL", led, sizeof(led)) && led[5] >= 1 && led[5] <= 4;
+     auto u16 = [&](int o) { return static_cast<unsigned>(led[o] | (led[o + 1] << 8)); };
+ 
+-    std::string j = "{\"System\":{\"deviceModel\":\"esp32-pixelcast board\"},";
++    std::string j = "{\"System\":{\"deviceModel\":\"esp32-pixelcast board\",\"I2cBus\":{\"sda\":21,\"scl\":22}},";
+     // The board's W5500: SCLK 18, MISO 19, MOSI 23, CS 5, INT 4, no reset line.
+     j += "\"Network\":{\"Ethernet\":{\"ethBoard\":\"Custom\",\"ethType\":3,\"ethSpiMiso\":19,"
+          "\"ethSpiMosi\":23,\"ethSpiSck\":18,\"ethSpiCs\":5,\"ethSpiIrq\":4,\"ethRstGpio\":-1";
+@@ -226,4 +232,133 @@ void pixelcastAfterSetup(mm::Scheduler& scheduler) {
+     }
+     xTaskCreate(bootWatch, "pxcBoot", 4096, nullptr, 1, nullptr);
+ }
++
++// The OLED. The render loop writes its four lines once a second and attaches it to MoonLight's
++// I2C bus (its owner, the I2cBus module, also runs there); a task of its own sends what changed,
++// a page (one line) of 128 bytes at a time, so the loop never waits on the bus.
++namespace mm::platform { i2c_master_bus_handle_t i2cBusHandle(); }
++
++static constexpr uint8_t kOledAddress = 0x3C;
++static constexpr int kOledCols = 21;   // 128 px of 6 px glyphs
++static char oledText[4][kOledCols + 1];
++static portMUX_TYPE oledTextMux = portMUX_INITIALIZER_UNLOCKED;
++static SemaphoreHandle_t oledBus;          // the device handle, while the task sends on it
++static i2c_master_dev_handle_t oledDev;    // attached on the bus of generation oledGen
++static uint32_t oledGen = UINT32_MAX;
++static bool oledFresh;                     // attached anew: the task sets the panel up first
++static TaskHandle_t oledTask;
++
++// A 128x32 panel with the charge pump on, mounted rotated (esp32-pixelcast's firmware/core/src/oled.rs).
++static const uint8_t kOledInit[] = {0x00, 0xAE, 0xD5, 0x80, 0xA8, 0x1F, 0xD3, 0x00, 0x40, 0x8D, 0x14, 0x20, 0x00,
++                                    0xA1, 0xC8, 0xDA, 0x02, 0x81, 0x8F, 0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6, 0xAF};
++
++// Printable ASCII of one status text, cut to a line: a UTF-8 character shows as '.', and a
++// longer text loses its "(…)" first ("Eth: 2.14.66.63 (100 Mbit)").
++static void oledLine(char (&out)[kOledCols + 1], const char* in) {
++    char t[2 * kOledCols + 1] = {};
++    int n = 0;
++    for (const char* c = in ? in : ""; *c && n < 2 * kOledCols; c++) {
++        const uint8_t b = static_cast<uint8_t>(*c);
++        if (b >= 0x80 && b < 0xC0) continue;
++        t[n++] = b >= 0x7F || b < 32 ? '.' : static_cast<char>(b);
++    }
++    t[n] = 0;
++    char* p;
++    if (n > kOledCols && (p = std::strstr(t, " (")) && p - t <= kOledCols) *p = 0;
++    t[kOledCols] = 0;
++    std::memcpy(out, t, sizeof(out));
++}
++
++static mm::MoonModule* ofType(mm::MoonModule* m, const char* type) {
++    if (!m || std::strcmp(m->typeName(), type) == 0) return m;
++    for (uint8_t i = 0; i < m->childCount(); i++)
++        if (mm::MoonModule* f = ofType(m->child(i), type)) return f;
++    return nullptr;
++}
++
++// Detached before the bus closes (platform_esp32_i2c.cpp).
++void pixelcastOledDetach() {
++    if (!oledBus || !oledDev) return;
++    xSemaphoreTake(oledBus, portMAX_DELAY);
++    i2c_master_bus_rm_device(oledDev);
++    oledDev = nullptr;
++    xSemaphoreGive(oledBus);
++}
++
++static bool oledSend(const uint8_t* b, size_t n) { return i2c_master_transmit(oledDev, b, n, 50) == ESP_OK; }
++
++static void oledRun(void*) {
++    static uint8_t shown[4][129], page[129];
++    for (;;) {
++        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
++        char text[4][kOledCols + 1];
++        taskENTER_CRITICAL(&oledTextMux);
++        std::memcpy(text, oledText, sizeof(text));
++        taskEXIT_CRITICAL(&oledTextMux);
++        xSemaphoreTake(oledBus, portMAX_DELAY);
++        if (oledDev && oledFresh && oledSend(kOledInit, sizeof(kOledInit))) {
++            oledFresh = false;
++            std::memset(shown, 0xFF, sizeof(shown));   // not what any line draws: all four go out
++        }
++        for (int l = 0; oledDev && !oledFresh && l < 4; l++) {
++            // One byte a column, its bits the 8 rows top down; the font has a byte a row, columns from the high bit.
++            const mm::fonts::Font& f = mm::fonts::kFont6x8;
++            std::memset(page, 0, sizeof(page));
++            page[0] = 0x40;   // data
++            for (int i = 0; text[l][i]; i++) {
++                const uint8_t* g = f.rows + (text[l][i] - 32) * f.height;
++                for (int x = 0; x < f.width; x++)
++                    for (int y = 0; y < f.height; y++)
++                        if (g[y] & (0x80 >> x)) page[1 + i * f.width + x] |= 1 << y;
++            }
++            if (std::memcmp(page, shown[l], sizeof(page)) == 0) continue;
++            const uint8_t window[] = {0x00, 0x21, 0, 127, 0x22, static_cast<uint8_t>(l), static_cast<uint8_t>(l)};
++            if (oledSend(window, sizeof(window)) && oledSend(page, sizeof(page))) std::memcpy(shown[l], page, sizeof(page));
++        }
++        xSemaphoreGive(oledBus);
++    }
++}
++
++// Once a second from the render loop.
++void pixelcastSecond(mm::Scheduler& scheduler) {
++    static uint8_t look;   // seconds to the next look for the panel
++    const uint32_t gen = mm::platform::i2cBusGeneration();
++    if (gen != oledGen) {   // the bus is new, or another
++        oledGen = gen;
++        pixelcastOledDetach();
++        look = 0;
++    }
++    if (!oledDev && look-- == 0) {
++        // Every 5 s while it does not answer (not powered yet, or the bus busy).
++        look = 4;
++        i2c_master_bus_handle_t bus = mm::platform::i2cBusHandle();
++        if (!bus || i2c_master_probe(bus, kOledAddress, 50) != ESP_OK) return;
++        if (!oledTask) {
++            oledBus = xSemaphoreCreateMutex();
++            if (!oledBus || xTaskCreatePinnedToCore(oledRun, "pxcOled", 4096, nullptr, 1, &oledTask, 0) != pdPASS) return;
++        }
++        i2c_device_config_t dev = {};
++        dev.dev_addr_length = I2C_ADDR_BIT_LEN_7;
++        dev.device_address = kOledAddress;
++        dev.scl_speed_hz = 400000;
++        xSemaphoreTake(oledBus, portMAX_DELAY);
++        if (i2c_master_bus_add_device(bus, &dev, &oledDev) != ESP_OK) oledDev = nullptr;
++        oledFresh = true;
++        xSemaphoreGive(oledBus);
++    }
++    if (!oledDev) return;
++    char text[4][kOledCols + 1];
++    mm::MoonModule* sys = scheduler.topOfType("SystemModule");
++    oledLine(text[0], sys ? static_cast<mm::SystemModule*>(sys)->deviceName() : "");
++    mm::MoonModule* net = scheduler.topOfType("NetworkModule");
++    oledLine(text[1], net && net->status() ? net->status() : "No network");
++    mm::MoonModule* in = ofType(scheduler.topOfType("Effects"), "NetworkReceiveEffect");
++    const char* st = in ? in->status() : nullptr;   // written by its receive task: read once
++    oledLine(text[2], !in ? "No Art-Net in" : st && st[0] ? st : "Art-Net: no data");
++    std::snprintf(text[3], sizeof(text[3]), "MoonLight %u fps", static_cast<unsigned>(scheduler.fps()));
++    taskENTER_CRITICAL(&oledTextMux);
++    std::memcpy(oledText, text, sizeof(text));
++    taskEXIT_CRITICAL(&oledTextMux);
++    xTaskNotifyGive(oledTask);
++}
+ #endif
+diff --git a/src/main.cpp b/src/main.cpp
+index 6d556a8..a6178c3 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -120,6 +120,7 @@
+ namespace mm { class Scheduler; }
+ void pixelcastBeforeSetup();
+ void pixelcastAfterSetup(mm::Scheduler& scheduler);
++void pixelcastSecond(mm::Scheduler& scheduler);
+ #endif
+ 
+ #include <csignal>   // sig_atomic_t: the stop flag a signal handler writes
+@@ -340,6 +341,9 @@ void mm_main(volatile std::sig_atomic_t& keepRunning, uint16_t httpPort) {
+             lastLog = now;
+             // The JSON client stops its worker once nothing uses it, which only the loop can ask safely.
+             mm::JsonFetch::poll();
++#ifdef CONFIG_MM_PIXELCAST
++            pixelcastSecond(scheduler);   // the board's OLED: esp32/main/pixelcast.cpp
++#endif
+             // `goto`, not `continue`, because the loop's pacing lives at its TAIL: @xref{why-the-loop-pacing-uses-goto-and-a-sleep}.
+             if (scheduler.tickTimeUs() == 0) goto paced; // no measurement yet
+ 
+diff --git a/src/platform/esp32/platform_esp32_i2c.cpp b/src/platform/esp32/platform_esp32_i2c.cpp
+index 04136e3..c2c547a 100644
+--- a/src/platform/esp32/platform_esp32_i2c.cpp
++++ b/src/platform/esp32/platform_esp32_i2c.cpp
+@@ -22,6 +22,11 @@
+ 
+ #include "driver/i2c_master.h"
+ #include "esp_log.h"
++#include "sdkconfig.h"
++
++#ifdef CONFIG_MM_PIXELCAST
++void pixelcastOledDetach();   // esp32/main/pixelcast.cpp: the board's OLED, a device on this bus
++#endif
+ 
+ namespace mm::platform {
+ 
+@@ -59,6 +64,9 @@ bool i2cBusOpen(uint16_t sda, uint16_t scl) {
+ void i2cBusClose() {
+     if (!g_bus) return;
+     audioCodecDeinit();   // a device still attached would keep the bus from closing
++#ifdef CONFIG_MM_PIXELCAST
++    pixelcastOledDetach();   // esp32/main/pixelcast.cpp
++#endif
+     i2c_del_master_bus(g_bus);
+     g_bus = nullptr;
+     g_generation.fetch_add(1, std::memory_order_relaxed);

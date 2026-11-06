@@ -5,7 +5,7 @@ table; after WLED's filesystem come this firmware's update record and
 settings). esp32-pixelcast runs in one, another ESP32 firmware can live in
 the other. Each firmware installs into the slot it is not running from.
 
-Supported: [WLED](wled/README.md).
+Supported: [WLED](wled/README.md), [MoonLight](moonlight/README.md).
 
 ## Using it
 
@@ -15,7 +15,8 @@ Supported: [WLED](wled/README.md).
   within 2 s, or BOOT within 2 s of a power-on.
 - **Back here:** upload esp32-pixelcast's `.bin` in the other firmware's
   update page. A firmware with our patches also has a shorter way (WLED:
-  `POST /pixelcast` or three BOOT clicks).
+  `POST /pixelcast`, MoonLight: `POST /api/pixelcast`; both: three BOOT
+  clicks).
 - A normal update of esp32-pixelcast overwrites the other slot; "Install
   into this slot" keeps it ([`updater/README.md`](../updater/README.md)).
 

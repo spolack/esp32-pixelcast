@@ -10,17 +10,19 @@
 use alloc::string::String;
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use esp_bootloader_esp_idf::partitions::{FlashStorage, PartitionEntry};
+use esp_bootloader_esp_idf::partitions::{self, FlashStorage, PARTITION_TABLE_MAX_LEN, PartitionEntry};
 use log::warn;
 use pixelcast_core::dualboot as hand;
 
 use crate::core1::Paused;
 use crate::settings::{self, EthMode};
 
+mod moonlight;
 mod wled;
 
-/// An adapter's version check and reset (see [`Adapter`]).
-pub type VersionFn = fn(&mut FlashStorage<'_>, PartitionEntry) -> Option<heapless::String<32>>;
+/// An adapter's version check and reset (see [`Adapter`]). The version
+/// check gets the image's app descriptor too (80 bytes, already read).
+pub type VersionFn = fn(&mut FlashStorage<'_>, PartitionEntry, &[u8]) -> Option<heapless::String<32>>;
 pub type ResetFn = fn(&mut FlashStorage<'_>, &Paused) -> Result<&'static str, &'static str>;
 
 /// What this firmware knows about one other firmware.
@@ -42,7 +44,9 @@ pub struct Adapter {
 
 /// The firmwares with an adapter. A new one: a module like [`wled`] and an
 /// entry here.
-pub const ADAPTERS: &[&Adapter] = &[&wled::ADAPTER];
+/// MoonLight first: its check is exact (its app descriptor), WLED's searches
+/// the image for text.
+pub const ADAPTERS: &[&Adapter] = &[&moonlight::ADAPTER, &wled::ADAPTER];
 
 /// The firmware in the other slot.
 #[derive(Clone, Copy)]
@@ -75,7 +79,7 @@ static PRESENT: AtomicU8 = AtomicU8::new(0);
 /// Identifies the image in `p`; `desc` is its app descriptor.
 pub fn identify(flash: &mut FlashStorage<'_>, p: PartitionEntry, desc: &[u8]) -> Identity {
     for a in ADAPTERS {
-        if let Some(version) = (a.version)(flash, p) {
+        if let Some(version) = (a.version)(flash, p, desc) {
             let mut name = heapless::String::new();
             let _ = name.push_str(a.name);
             return Identity { firmware: Firmware::Known(a), name, version };
@@ -159,4 +163,21 @@ pub fn reset(flash: &mut FlashStorage<'_>, paused: &Paused) -> Result<&'static s
             None => Err("No reset known for the firmware in the other slot.\n"),
         },
     }
+}
+
+/// Erases the start of the shared filesystem (the `spiffs` partition;
+/// LittleFS keeps its superblocks in the first two blocks), so the firmware
+/// in the other slot formats it on its next start. WLED and MoonLight both
+/// keep their settings there: whatever either stored is gone.
+fn erase_filesystem(flash: &mut FlashStorage<'_>, missing: &'static str, failed: &'static str) -> Result<(), &'static str> {
+    let mut buf = [0u8; PARTITION_TABLE_MAX_LEN];
+    let pt = partitions::read_partition_table(flash, &mut buf).map_err(|_| "Cannot read the partition table.\n")?;
+    let fs = pt
+        .iter()
+        .find(|p| p.label_as_str() == "spiffs" && p.raw_type() == 1) // data (partition_type() panics on unknown subtypes)
+        .ok_or(missing)?;
+    if fs.len() < 2 * settings::SECTOR {
+        return Err(missing);
+    }
+    flash.erase(fs.offset(), fs.offset() + 2 * settings::SECTOR).map_err(|_| failed)
 }
