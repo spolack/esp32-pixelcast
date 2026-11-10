@@ -1,7 +1,7 @@
 name: build
 
 # Every push and pull request builds all images. A tag v* publishes them as a
-# release; a push to main (and the nightly schedule) replaces the "nightly"
+# release; a push to main (and the nightly schedule) recreates the "nightly"
 # pre-release.
 on:
   push:
@@ -157,7 +157,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The whole history and tags: the release notes list the commits since
+      # the previous v* tag.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -169,28 +173,34 @@ jobs:
           name: images
           path: dist/*
 
+      # Outside dist/, whose files are all release assets.
+      - name: release notes
+        if: startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name != 'pull_request')
+        run: |
+          tools/release-notes.sh "$GITHUB_SHA" > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
       - name: release (tag)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" --notes-file .github/release-notes.md
+            --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
 
       - name: nightly (main)
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-        # Updated in place (move the tag, replace the files), so a failure
-        # halfway leaves the previous nightly instead of none.
+        # Recreated each time: editing a release keeps its first publish date,
+        # so the release page showed an updated nightly as days old. A failure
+        # between delete and create leaves no nightly until the next run.
         run: |
-          title="nightly ($(git rev-parse --short HEAD))"
+          title="nightly ($(git rev-parse --short HEAD), $(date -u +%Y-%m-%d))"
           git tag -f nightly "$GITHUB_SHA"
           git push -f origin refs/tags/nightly
           if gh release view nightly >/dev/null 2>&1; then
-            gh release upload nightly dist/* --clobber
-            gh release edit nightly --prerelease --title "$title" --notes-file .github/release-notes.md
-          else
-            gh release create nightly dist/* --prerelease --verify-tag \
-              --title "$title" --notes-file .github/release-notes.md
+            gh release delete nightly --yes
           fi
+          gh release create nightly dist/* --prerelease --verify-tag \
+            --title "$title" --notes-file "$RUNNER_TEMP/notes.md"
