@@ -44,7 +44,7 @@ static_cell      = "2.1.1"
 embassy-net = { version = "0.9", features = ["dhcpv4", "medium-ethernet", "udp", "tcp", "raw", "proto-ipv4", "multicast", "log"] }
 embassy-net-wiznet = "0.3"
 # Only to switch on smoltcp's ping replies (embassy-net does not expose it).
-smoltcp = { version = "0.13", default-features = false, features = ["auto-icmp-echo-reply"] }
+smoltcp = { version = "0.14", default-features = false, features = ["auto-icmp-echo-reply"] }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embassy-futures = "0.1"
