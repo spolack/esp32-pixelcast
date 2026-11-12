@@ -54,7 +54,7 @@ edge-dhcp = { version = "0.8", default-features = false, features = ["io", "log"
 edge-captive = { version = "0.8", default-features = false, features = ["io", "log"] }
 edge-nal = "0.7"
 edge-nal-embassy = { version = "0.9", default-features = false, features = ["proto-ipv4", "medium-ethernet", "udp"] }
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 
 
 # Web pages are inlined, minified and gzipped at build time (see build.rs).
